@@ -8,10 +8,30 @@ https://www.cnblogs.com/rossiXYZ/p/15902100.html
 solver_config = hugectr.solver_parser_helper(batchsize = 16384 == 只有v2.3, v3.0， v3.0.1
 std::vector<std::shared_ptr<IEmbedding>> embeddings_ 最先v3.0
  Session(const SolverParser& solver_config, const std::string& config_file)  最先v3.1 ====后续搜索显示都有，基本确定！！！
-
-
  这里CSR是嵌入层依赖的数据格式，我们下文会分析。
  001-002.png
+
+https://www.cnblogs.com/rossiXYZ/p/15905658.html
+[源码解析] NVIDIA HugeCTR，GPU版本参数服务器---(3)
+ 0x02 数据集
+ HugeCTR 目前支持三种数据集格式，即Norm、Raw和Parquet，具体格式参见如下：
+002-001.png
+ Fig. 1: (a) Norm (b) Raw (c) Parquet Dataset Formats
+2.1 Norm
+ 为了最大化数据加载性能并最小化存储，Norm 数据集格式由一组二进制数据文件和一个 ASCII 格式的文件列表组成。
+ 模型文件应指定训练和测试（评估）集的文件名，样本中的元素（键）最大数目和标签维度，具体如图 1（a）所示。
+..
+4.2.4 小结
+至此，Tensor的逻辑拓展一下：
+    TensorBufferImpl 的 buffer 是GeneralBuffer2；
+    GeneralBuffer2 的 ptr 是由CudaAllocator在GPU之中分配的；GeneralBuffer2 可以认为是一个对大段内存的统一封装，在其上可以有若干Tensor。这些Tensor先reserve内存，然后统一分配。
+    TensorBufferImpl 的 offset_ 就指向了 GeneralBuffer2 的 ptr 之中具体的某一个内存偏移；
+    BufferBlockImpl 用来实现一个连续的Tensor内存。
+002-006.jpg
+
+如果还有另外一个 Tensor2，则其 TensorBufferImpl.offset 会指向 GPU内存的另外一个offset，
+比如下面有两个张量，Tensor 1 和 Tensor 2。
+002-007.jpg
 
 
 系列共六篇！

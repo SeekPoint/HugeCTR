@@ -20,13 +20,14 @@
 #include "tensor2.hpp"
 
 namespace HugeCTR {
-
+// HostAllocator 作用是在host之上管理内存。  后面几个实现都是调用了CUDA函数来进行内存分配，比如 cudaHostAlloc，有兴趣读者可以深入学习
 class HostAllocator {
  public:
   void *allocate(size_t size) const { return malloc(size); }
   void deallocate(void *ptr) const { free(ptr); }
 };
 
+//调用CUDA方法在主机上分配内存
 class CudaHostAllocator {
  public:
   void *allocate(size_t size) const {
@@ -37,6 +38,7 @@ class CudaHostAllocator {
   void deallocate(void *ptr) const { CK_CUDA(cudaFreeHost(ptr)); }
 };
 
+//cudaMallocManaged 分配旨在供主机或设备代码使用的内存，算是一种统一分配内存的方法。
 class CudaManagedAllocator {
  public:
   void *allocate(size_t size) const {
@@ -47,6 +49,7 @@ class CudaManagedAllocator {
   void deallocate(void *ptr) const { CK_CUDA(cudaFree(ptr)); }
 };
 
+//该类是在设备上分配内存。
 class CudaAllocator {
  public:
   void *allocate(size_t size) const {
@@ -64,7 +67,22 @@ class BufferBlock2 {
   virtual void reserve(const std::vector<size_t> &dimensions, Tensor2<T> *tensor) = 0;
   virtual Tensor2<T> &as_tensor() = 0;
 };
+/*
+ 4.2.2 GeneralBuffer2
+分析完如何分配内存，我们接下来看看如何封装内存，具体通过 GeneralBuffer2 完成的。GeneralBuffer2 可以认为是一个对大段内存的统一封装，具体在其上可以有若干Tensor。
 
+4.2.2.1 定义
+   这里都忽略了成员函数，内部类也忽略了成员函数。
+
+       allocator ：具体内存分配器，也区分在GPU分配还是CPU分配。
+       ptr_ ：指向分配的内存；
+       total_size_in_bytes_ ：内存大小；
+       reserved_buffers_ ：前期预留buffer，后续会统一分配;
+具体内部类为：
+        BufferInternal 是接口。
+        TensorBufferImpl 是 Tensor2 对应的buffer实现。
+        BufferBlockImpl 则是在构建网络时候会用到。
+*/
 template <typename Allocator>
 class GeneralBuffer2 : public std::enable_shared_from_this<GeneralBuffer2<Allocator>> {
   class BufferInternal {
@@ -85,6 +103,7 @@ class GeneralBuffer2 : public std::enable_shared_from_this<GeneralBuffer2<Alloca
     void *get_ptr() override { return forward_void_pointer(buffer_->ptr_, offset_); }
 
     size_t get_size_in_bytes() const { return size_in_bytes_; }
+    //就是指向了一个 GeneralBuffer2，然后设定了自己的offset和大小。
     void initialize(const std::shared_ptr<GeneralBuffer2> &buffer, size_t offset) {
       buffer_ = buffer;
       offset_ = offset;
@@ -102,6 +121,7 @@ class GeneralBuffer2 : public std::enable_shared_from_this<GeneralBuffer2<Alloca
    public:
     BufferBlockImpl() : total_num_elements_(0), finalized_(false) {}
 
+    //BufferBlockImpl 多了一个reserve方法，用来预留内存空间，在此空间之上生成内部tensor。
     void reserve(const std::vector<size_t> &dimensions, Tensor2<T> *tensor) override {
       if (finalized_) {
         throw std::runtime_error(ErrorBase + "Buffer block is finalized.");
@@ -132,6 +152,7 @@ class GeneralBuffer2 : public std::enable_shared_from_this<GeneralBuffer2<Alloca
       return total_num_elements_ * TensorScalarSizeFunc<T>::get_element_size();
     }
 
+    //initialize 会对内部进行配置
     void initialize(const std::shared_ptr<GeneralBuffer2> &buffer, size_t offset) {
       size_t local_offset = 0;
       for (const std::shared_ptr<BufferInternal> &buffer_impl : reserved_buffers_) {
@@ -171,6 +192,7 @@ class GeneralBuffer2 : public std::enable_shared_from_this<GeneralBuffer2<Alloca
     }
   }
 
+  //allocate 会遍历注册的 BufferInternal，累积其总大小，最后调用 allocator_ 进行分配内存
   void allocate() {
     if (ptr_ != nullptr) {
       throw std::runtime_error(ErrorBase + "Memory has already been allocated.");
@@ -193,6 +215,7 @@ class GeneralBuffer2 : public std::enable_shared_from_this<GeneralBuffer2<Alloca
     }
   }
 
+  //create_block 会针对BufferBlock2进行创建
   template <typename T>
   std::shared_ptr<BufferBlock2<T>> create_block() {
     if (allocated()) {
@@ -203,6 +226,7 @@ class GeneralBuffer2 : public std::enable_shared_from_this<GeneralBuffer2<Alloca
     return block_impl;
   }
 
+  //reserve 方法会把某一个张量对应的内存需求用 TensorBufferImpl 的形式记录在reserved_buffers_之中，然后生成这个张量，而且就是用TensorBufferImpl 生成。
   template <typename T>
   void reserve(const std::vector<size_t> &dimensions, Tensor2<T> *tensor) {
     if (allocated()) {

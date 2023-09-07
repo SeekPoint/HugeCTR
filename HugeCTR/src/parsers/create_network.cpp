@@ -1234,6 +1234,7 @@ Network* Network::create_network(const nlohmann::json& j_array, const nlohmann::
   std::shared_ptr<GeneralBuffer2<CudaAllocator>> blobs_buff =
       GeneralBuffer2<CudaAllocator>::create();
 
+  //BufferBlockImpl 是一组连续的 Tensor，某些特定的实现需要连续的内存，比如权重
   std::shared_ptr<BufferBlock2<float>> train_weight_buff = blobs_buff->create_block<float>();
   std::shared_ptr<BufferBlock2<__half>> train_weight_buff_half = blobs_buff->create_block<__half>();
   std::shared_ptr<BufferBlock2<float>> wgrad_buff = nullptr;

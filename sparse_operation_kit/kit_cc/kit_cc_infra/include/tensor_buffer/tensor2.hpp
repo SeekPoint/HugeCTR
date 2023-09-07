@@ -77,7 +77,7 @@ struct TensorScalarTypeFunc<unsigned int> {
 };
 
 }  // namespace
-
+//TensorBuffer2 是张量底层的数据，也许联系到 PyTorch 的 data 或者 storage 可以更好的理解
 class TensorBuffer2 {
  public:
   virtual ~TensorBuffer2() {}
@@ -85,6 +85,13 @@ class TensorBuffer2 {
   virtual void *get_ptr() = 0;
 };
 
+/*4.1.4 TensorBag2
+PyTorch 之中也有一些Bag后缀名字的类，比如 nn.Embedding和nn.EmbeddingBag。
+ 当构建袋子模型时，做一个Embedding跟随Sum或是Mean常见的。
+ 对于可变长度序列，nn.EmbeddingBag 来提供了更加高效和更快速的处理方式，特别是对于可变长度序列。
+
+在 HugeCTR，TensorBag2 可以认为是把 Tensor 放在袋子里统一处理的类
+        */
 class TensorBag2 {
   template <typename T>
   friend class Tensor2;
@@ -102,6 +109,7 @@ class TensorBag2 {
   void* get_ptr() { return buffer_->get_ptr(); }
 };
 
+//对应了TF或者PyTorch的张量  002-003.jpg
 template <typename T>
 class Tensor2 {
   std::vector<size_t> dimensions_;
@@ -146,6 +154,6 @@ class Tensor2 {
 };
 
 template <typename T>
-using Tensors2 = std::vector<Tensor2<T>>;
+using Tensors2 = std::vector<Tensor2<T>>;  //Tensors2 就是 Tensor2 的一个vector。
 
 }  // namespace HugeCTR

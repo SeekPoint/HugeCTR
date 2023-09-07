@@ -231,6 +231,15 @@ struct HybridEmbeddingParam {
   hybrid_embedding::HybridEmbeddingType hybrid_embedding_type;
 };
 
+/*2.1 Norm
+为了最大化数据加载性能并最小化存储，Norm 数据集格式由一组二进制数据文件和一个 ASCII 格式的文件列表组成。
+ 模型文件应指定训练和测试（评估）集的文件名，样本中的元素（键）最大数目和标签维度，具体如图 1（a）所示。
+
+2.1.1 数据文件
+        一个数据文件是一个读取线程的最小读取粒度，因此每个文件列表中至少需要10个文件才能达到最佳性能。数据文件由header和实际表格（tabular ）数据组成。
+
+            Header定义：
+*/
 typedef struct DataSetHeader_ {
   long long error_check;        // 0: no error check; 1: check_sum
   long long number_of_records;  // the number of samples in this data file
@@ -238,6 +247,12 @@ typedef struct DataSetHeader_ {
   long long dense_dim;          // dimension of dense feature
   long long slot_num;           // slot_num for each embedding
   long long reserved[3];        // reserved for future use
+//  long  long error_check;       //0: 没有错误检查；1：check_num
+//  long  long number_of_records； //此数据文件中的样本数
+//      long  long label_dim;          //标签的维度
+//  long  long density_dim;        //密集特征的维度
+//  long  long slot_num;           //每个嵌入的 slot_num
+//  long  long reserved[ 3 ];      //保留以备将来使用
 } DataSetHeader;
 
 #define DISALLOW_COPY(ClassName)        \
