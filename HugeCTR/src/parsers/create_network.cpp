@@ -74,16 +74,20 @@ static bool get_tensor_from_entries(const std::vector<TensorEntry> tensor_entrie
   return false;
 }
 
+//可以看到，每一层都会记录自己的输入和输出，结合内部解析模块，这些层就建立其了逻辑关系。
+//最终，建立流水线逻辑关系如下：001-003.jpg
 static InputOutputInfo get_input_tensor_and_output_name(
     const nlohmann::json& json, const std::vector<TensorEntry>& tensor_entries) {
   auto bottom = get_json(json, "bottom");
   auto top = get_json(json, "top");
 
+  //// 从jason获取输入，输出名字
   std::vector<std::string> bottom_names = get_layer_names(bottom);
   std::vector<std::string> top_names = get_layer_names(top);
 
   std::vector<TensorBag2> bottom_bags;
 
+  //// 把输出组成一个向量列表
   for (auto& bottom_name : bottom_names) {
     for (auto& top_name : top_names) {
       if (bottom_name == top_name) {
@@ -131,6 +135,12 @@ static std::shared_ptr<Regularizer<T>> create_regularizer(
   return reg;
 }
 
+/*4.5.1 create_layers
+create_layers 有两个版本，
+ 分别是HugeCTR/src/parsers/create_network.cpp 和 HugeCTR/src/cpu/create_network_cpu.cpp，
+ 我们使用 create_network.cpp 的代码来看看。
+其实就是遍历从配置读取的json数组，然后建立每一层，因为层类型太多，所以我们只给出了两个例子。
+ */
 void create_layers(const nlohmann::json& j_array, std::vector<TensorEntry>& tensor_entries,
                    const std::shared_ptr<GeneralBuffer2<CudaAllocator>>& blobs_buff,
                    const std::shared_ptr<BufferBlock2<float>>& weight_buff,
@@ -159,6 +169,7 @@ void create_layers(const nlohmann::json& j_array, std::vector<TensorEntry>& tens
     layers.emplace_back(layer);
   };
 
+  // 遍历json数组
   for (unsigned int i = 1; i < j_array.size(); i++) {
     const nlohmann::json& j = j_array[i];
     const auto layer_type_name = get_value_from_json<std::string>(j, "type");
@@ -185,6 +196,7 @@ void create_layers(const nlohmann::json& j_array, std::vector<TensorEntry>& tens
     }
 
     std::vector<TensorEntry> output_tensor_entries;
+    //在create_layers之中有如下代码
     auto input_output_info = get_input_tensor_and_output_name(j, tensor_entries);
     switch (layer_type) {
       case Layer_t::BatchNorm: {
@@ -749,12 +761,15 @@ void create_layers(const nlohmann::json& j_array, std::vector<TensorEntry>& tens
 
         break;
       }
+        // 建立对应的每一层
       case Layer_t::ReduceMean: {
         int axis = get_json(j, "axis").get<int>();
+        // 本层输入
         Tensor2<float> in_tensor = Tensor2<float>::stretch_from(input_output_info.inputs[0]);
         Tensor2<float> out_tensor;
         emplaceback_layer(
             new ReduceMeanLayer<float>(in_tensor, out_tensor, blobs_buff, axis, gpu_resource));
+        // 本层输出
         output_tensor_entries.push_back({input_output_info.output_names[0], out_tensor.shrink()});
         break;
       }
@@ -835,9 +850,12 @@ void create_layers(const nlohmann::json& j_array, std::vector<TensorEntry>& tens
         break;
       }
       case Layer_t::PReLU_Dice: {
+        // 本层输入
         Tensor2<float> in_tensor = Tensor2<float>::stretch_from(input_output_info.inputs[0]);
         Tensor2<float> out_tensor;
         blobs_buff->reserve(in_tensor.get_dimensions(), &out_tensor);
+
+        // 本层输出
         output_tensor_entries.push_back({input_output_info.output_names[0], out_tensor.shrink()});
         // get PReLU_Dice params
         auto j_prelu_dice_param = get_json(j, "prelu_dice_param");
@@ -1181,7 +1199,13 @@ void create_layers(const nlohmann::json& j_array, std::vector<TensorEntry>& tens
 
 /*
  * Create single network
- *
+ 4.5 建立网络
+  接下来是建立网络环节，这部分过后，hugeCTR系统就正式建立起来，可以进行训练了，大体逻辑是：
+    进行GPU内存分配，这里大量使用了 create_block，其中就是 BufferBlockImpl。
+    建立训练网络层。
+    建立评估网络层。
+    建立优化器。
+    初始化网络其他信息
  */
 Network* Network::create_network(const nlohmann::json& j_array, const nlohmann::json& j_optimizer,
                                  std::vector<TensorEntry>& train_tensor_entries,
@@ -1206,6 +1230,7 @@ Network* Network::create_network(const nlohmann::json& j_array, const nlohmann::
   auto& enable_cuda_graph = network->enable_cuda_graph_;
   auto& raw_metrics = network->raw_metrics_;
 
+  // 会进行GPU内存分配，这里大量使用了 create_block，其中就是 BufferBlockImpl
   std::shared_ptr<GeneralBuffer2<CudaAllocator>> blobs_buff =
       GeneralBuffer2<CudaAllocator>::create();
 
@@ -1248,6 +1273,7 @@ Network* Network::create_network(const nlohmann::json& j_array, const nlohmann::
   std::shared_ptr<BufferBlock2<float>> opt_buff = blobs_buff->create_block<float>();
   std::shared_ptr<BufferBlock2<__half>> opt_buff_half = blobs_buff->create_block<__half>();
 
+  // 建立训练网络层
   if (!inference_flag) {
     // create train layers
     create_layers(j_array, train_tensor_entries, blobs_buff, train_weight_buff,
@@ -1257,6 +1283,7 @@ Network* Network::create_network(const nlohmann::json& j_array, const nlohmann::
                   top_layers, bottom_layers);
   }
 
+  // 建立评估网络层
   // create evaluate layers
   create_layers(j_array, evaluate_tensor_entries, blobs_buff, evaluate_weight_buff,
                 evaluate_weight_buff_half, wgrad_buff_placeholder, wgrad_buff_half_placeholder,
@@ -1265,6 +1292,7 @@ Network* Network::create_network(const nlohmann::json& j_array, const nlohmann::
                 evaluate_loss, &raw_metrics);
 
   // create optimizer
+  // 建立优化器
   if (!inference_flag) {
     if (use_mixed_precision) {
       auto opt_param = get_optimizer_param(j_optimizer);
@@ -1293,6 +1321,7 @@ Network* Network::create_network(const nlohmann::json& j_array, const nlohmann::
     }
   }
 
+  // 初始化网络其他信息
   network->train_weight_tensor_ = train_weight_buff->as_tensor();
   network->train_weight_tensor_half_ = train_weight_buff_half->as_tensor();
   network->wgrad_tensor_ = wgrad_buff->as_tensor();

@@ -118,7 +118,7 @@ void GroupedExchangeWgrad<T>::update_embed_wgrad_size(size_t size) {
   auto ar_comm = resource_manager_->get_ar_comm();
   ar_comm->update_size(ar_handle_, network_wgrad_size_ + embed_wgrad_size_);
 }
-
+//比如通过allreduce进行交换
 template <typename T>
 void GroupedExchangeWgrad<T>::allreduce(size_t device_id, cudaStream_t stream) {
   auto ar_comm = resource_manager_->get_ar_comm();

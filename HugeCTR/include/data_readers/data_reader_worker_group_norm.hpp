@@ -20,7 +20,10 @@
 #include <data_readers/data_reader_worker_group.hpp>
 
 namespace HugeCTR {
-
+/*
+ * 4.3.3.3 DataReaderWorkerGroupNorm
+在 DataReaderWorkerGroupNorm 之中，建立了DataReaderWorker，其中 file_list_ 是需要读取的数据文件。
+ */
 template <typename TypeKey>
 class DataReaderWorkerGroupNorm : public DataReaderWorkerGroup {
   std::string file_list_; /**< file list of data set */

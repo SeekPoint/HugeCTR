@@ -56,6 +56,7 @@ class NetworkExchangeWgrad : public ExchangeWgrad {
   size_t num_gpus_ = 0;
 };
 
+//其中 GroupedExchangeWgrad 是用来交换梯度的
 template <typename TypeFP>
 class GroupedExchangeWgrad : public ExchangeWgrad {
  public:

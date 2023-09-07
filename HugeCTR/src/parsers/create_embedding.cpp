@@ -38,11 +38,12 @@ void create_embedding<TypeKey, TypeFP>::operator()(
     bool use_mixed_precision, float scaler, const nlohmann::json& j_layers, bool use_cuda_graph,
     bool grouped_all_reduce) {
 #ifdef ENABLE_MPI
-  int num_procs = 1, pid = 0;
+  int num_procs = 1, pid = 0;  // 建立 MPI相关
   MPI_Comm_rank(MPI_COMM_WORLD, &pid);
   MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
 #endif
 
+  // 从配置文件之中读取
   auto j_optimizer = get_json(config, "optimizer");
   auto embedding_name = get_value_from_json<std::string>(j_layers, "type");
 
@@ -63,7 +64,7 @@ void create_embedding<TypeKey, TypeFP>::operator()(
 
   auto combiner_str = get_value_from_json<std::string>(j_hparam, "combiner");
 
-  int combiner;
+  int combiner;  // 设定combiner方法
   if (combiner_str == "sum") {
     combiner = 0;
   } else if (combiner_str == "mean") {
@@ -72,6 +73,7 @@ void create_embedding<TypeKey, TypeFP>::operator()(
     CK_THROW_(Error_t::WrongInput, "No such combiner type: " + combiner_str);
   }
 
+  // 设定slot配置
   std::vector<size_t> slot_size_array;
   if (has_key_(j_hparam, "slot_size_array")) {
     auto slots = get_json(j_hparam, "slot_size_array");
@@ -86,6 +88,7 @@ void create_embedding<TypeKey, TypeFP>::operator()(
     CK_THROW_(Error_t::WrongInput, "Cannot find bottom");
   }
 
+  // 设定优化器配置
   OptParams embedding_opt_params;
   if (has_key_(j_layers, "optimizer")) {
     embedding_opt_params = get_optimizer_param(get_json(j_layers, "optimizer"));
@@ -94,6 +97,7 @@ void create_embedding<TypeKey, TypeFP>::operator()(
   }
   embedding_opt_params.scaler = scaler;
 
+  // 建立不同的hash
   switch (embedding_type) {
     case Embedding_t::DistributedSlotSparseEmbeddingHash: {
       const SparseEmbeddingHashParams embedding_params = {batch_size,

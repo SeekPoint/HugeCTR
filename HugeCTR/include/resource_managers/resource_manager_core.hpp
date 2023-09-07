@@ -24,6 +24,7 @@ namespace HugeCTR {
  *
  * A core GPU Resource manager
  */
+ //核心实现：ResourceManagerCore，这里记录了各种资源。
 class ResourceManagerCore : public ResourceManager {
  private:
   int num_process_;

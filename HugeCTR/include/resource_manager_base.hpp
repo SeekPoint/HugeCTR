@@ -25,6 +25,7 @@ namespace HugeCTR {
  *
  * The top level resource manager interface shared by various components
  */
+ //ResourceManagerBase 是最顶层接口，ResourceManager 进行了扩展
 class ResourceManagerBase {
  public:
   virtual void set_local_gpu(std::shared_ptr<GPUResource> gpu_resource, size_t local_gpu_id) = 0;
