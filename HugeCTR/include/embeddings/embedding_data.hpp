@@ -257,7 +257,8 @@ class EmbeddingData {
    */
   DISALLOW_COPY_AND_MOVE(EmbeddingData)
 };
-
+//输出在哪里？就是在 embedding_data.train_output_tensors_ 之中，后续我们会分析。
+//所以，对于 embedding，就是通过sparse_input_map 和 train_tensor_entries_list 构成了输入，输出数据流。
 #define USE_EMBEDDING_DATA_FUNCTION(embedding_data)                                          \
   Embedding_t get_embedding_type() const override { return embedding_data.embedding_type_; } \
   std::vector<TensorBag2> get_train_output_tensors() const override {                        \

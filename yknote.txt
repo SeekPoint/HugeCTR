@@ -321,7 +321,6 @@ https://www.cnblogs.com/rossiXYZ/p/15916979.html
 最终sparse 参数的embedding是在DataReaderOutput，即后续 GPU 上的计算是从output开始的。
 003-012.jpg
 
-
 4.7.4 小结
 我们总结逻辑如下，线程一直调用 data_reader_thread_func_ 来循环读取：
 003-007.jpg
@@ -334,8 +333,360 @@ https://www.cnblogs.com/rossiXYZ/p/15916979.html
 这里简化了多GPU，多worker 的情况。
 003-008.jpg
 
+https://www.cnblogs.com/rossiXYZ/p/15924047.html
+[源码解析] NVIDIA HugeCTR，GPU版本参数服务器--- (5) 嵌入式hash表
+目录
+[源码解析] NVIDIA HugeCTR，GPU版本参数服务器--- (5) 嵌入式hash表
 
-系列共六篇！
+在这篇文章中，我们介绍了 HugeCTR，这是一个面向行业的推荐系统训练框架，针对具有模型并行嵌入和数据并行密集网络的大规模 CTR 模型进行了优化。
+其中借鉴了HugeCTR源码阅读 这篇大作，特此感谢。
+
+0x01 前文回顾
+在前文，我们已经完成了对HugeCTR流水线的分析，接下来就要看嵌入层的实现，这部分是HugeCTR的精华所在。
+嵌入在现代基于深度学习的推荐架构中发挥着关键作用，其为数十亿实体（用户、产品及其特征）编码个体信息。
+随着数据量的增加，嵌入表的大小也在增加，现在跨越多个 GB 到 TB。
+因为其巨大的嵌入表和稀疏访问模式可能跨越多个 GPU，所以训练这种类型的 DL 系统存在独特的挑战。
+
+HugeCTR 就实现了一种优化的嵌入实现，其性能比其他框架的嵌入层高 8 倍。
+这种优化的实现也可作为 TensorFlow 插件使用，可与 TensorFlow 无缝协作，并作为 TensorFlow 原生嵌入层的便捷替代品。
+
+0x02 Embedding
+2.1 概念
+我们先简要介绍一下embedding的概念。嵌入（embedding）是一种机器学习技术，
+被用来把一个id/category特征自动转换为待优化的特征向量，这样可以把算法从精确匹配拓展到模糊匹配，从而提高算法的拓展能力。
+从另一个角度看，嵌入表是一种特定类型的key-value存储，键是用于唯一标识对象的 ID，值是实数向量。
+
+Embedding技术在 NLP 中很流行，用来把单词表示密集数值向量，具有相似含义的单词具有相似的嵌入向量。
+
+另外，Embedding 还有一个优势就是把数据从高维转换为低维。
+
+2.1.1 One-hot 编码
+作为比对，我们先看看 One-hot 编码。One-hot编码就是保证每个样本中的单个特征只有1位处于状态1，其他的都是0。具体编码举例如下，把语料库中，杭州、上海、宁波、北京每个都对应一个向量，向量中只有一个值为1，其余都为0。
+
+杭州 [0,0,0,0,0,0,0,1,0,……，0,0,0,0,0,0,0]
+上海 [0,0,0,0,1,0,0,0,0,……，0,0,0,0,0,0,0]
+宁波 [0,0,0,1,0,0,0,0,0,……，0,0,0,0,0,0,0]
+北京 [0,0,0,0,0,0,0,0,0,……，1,0,0,0,0,0,0]
+其缺点是：
+    向量的维度会随着词的数量增大而增大；如果将世界所有城市名称对应的向量组成一个矩阵的话，那这个矩阵因为过于稀疏则会造成维度灾难。
+    因为城市编码是随机的，所以向量之间相互独立，无法表示词汇之间在语义层面上的相关信息。
+所以，人们想对独热编码做如下改进：
+    将vector每一个元素由整型改为浮点型，从整型变为整个实数范围的表示；
+    把原始稀疏向量转化为低维度的连续值，也就是稠密向量。可以认为是将原来稀疏的巨大维度压缩嵌入到一个更小维度的空间。并且其中意思相近的词将被映射到这个向量空间中相近的位置。
+    简单说，就是寻找一个空间映射把高维词向量嵌入到一个低维空间。
+
+2.1.2 分布式表示
+分布式表示（Distributed Representation）基本思想是将每个词表达成 n 维稠密、连续的实数向量。
+而实数向量之间的关系可以代表词语之间的相似度，比如向量的夹角cosine或者欧氏距离。
+用词汇举例，独热编码相当于对词进行编码，而分布式表示则是将词从稀疏的大维度压缩嵌入到较低维度的向量空间中。
+
+分布式表示最大的贡献就是让相关或者相似的词在距离上更接近了。
+分布式表示相较于One-hot方式另一个区别是维数下降很多，对于一个100万的词表，我们可以用100维的实数向量来表示一个词，而One-hot得要100W万来编码。
+比如杭州、上海、宁波、北京，广州，深圳，沈阳，西安，洛阳 这九个城市 采用 one-hot 编码如下：
+
+杭州 [1,0,0,0,0,0,0,1,0]
+上海 [0,1,0,0,0,0,0,0,0]
+宁波 [0,0,1,0,0,0,0,0,0]
+北京 [0,0,0,1,0,0,0,0,0]
+广州 [0,0,0,0,1,0,0,0,0]
+深圳 [0,0,0,0,0,1,0,0,0]
+沈阳 [0,0,0,0,0,0,1,0,0]
+西安 [0,0,0,0,0,0,0,1,0]
+洛阳 [0,0,0,0,0,0,0,0,1]
+但是太稀疏，占用太大内存，所以弄一个稠密矩阵，也就是 Embedding Table 如下：
+....
+如果要查找杭州，上海：
+....
+利用矩阵乘法，可以得到：
+......
+
+        004-clip-01.png
+
+这样就把两个 1 x 9 的高维度，离散，稀疏向量，压缩到 两个 1 x 3 的低维稠密向量。
+这里把 One-Hot 向量中 “1”的位置叫做sparseID，就是一个编号。
+这个独热向量和嵌入表的矩阵乘法就等于利用sparseID进行的一次查表过程，就是依据杭州，上海的sparseID（0，1），从嵌入表中取出对应的向量（第0行、第1行）。
+这样就把高维变成了低维。
+
+2.1.3 推荐领域
+在推荐系统领域，Embedding将每个感兴趣的对象（用户、产品、类别等）表示为一个密集的数值向量。
+最简单的推荐系统基于用户和产品：您应该向用户推荐哪些产品？您有用户 ID 和产品 ID作为key。
+对应的value则是用户和产品，因此您使用两个嵌入表。
+004-001.png
+图1. 嵌入表是稀疏类别的密集表示。 每个类别由一个向量表示，这里嵌入维度是4。来自 Using Neural Networks for Your Recommender System。
+
+2.2 Lookup
+从上图能够看到另外一个概念：lookup，我们接下来就分析一下。
+Embeddings层的神经元个数是由embedding vector和field_size共同确定，即神经元的个数为embedding vector * field_size。
+dense vector是embeding层的输出的水平拼接。由于输入特征one-hot编码，所以embedding vector也就是输入层到Dense Embeddings层的权重，也就是全连接层的权重。
+
+Embedding 权重矩阵可以是一个 [item_size, embedding_size] 的稠密矩阵，item_size是需要embedding的物品个数，
+embedding_size是映射的向量长度，或者说矩阵的大小是：特征数量 * 嵌入维度。
+Embedding 权重矩阵的每一行对应输入的一个维度特征（one-hot之后的维度）。用户可以用一个index表示选择了哪个特征。
+
+Embedding_lookup 就是如何从Embedding 权重矩阵获取到一个超高维输入对应的embedding向量的方法，
+embedding就是权重本身。Embedding_lookup 实际上是由矩阵相乘实现的 V = WX + b，因为输入 X 是One-Hot编码，
+所以和矩阵相乘相当于是取出权重矩阵中对应的那一行，看起来像是在查一个索引表，所以叫做 lookup。
+Embedding 本质上可以看做是一个全连接层。比如：
+....  004-clip-02.png
+嵌入层这些权重是通过神经网络自己学习到的，实际上，权重矩阵一般是随机初始化的，是需要优化的变量。训练神经网络时，每个Embedding向量都会得到更新，即在不断升维和降维的过程中，找到最适合的维度。因此，embedding_lookup 这里还需要完成反向传播，即自动求导和对权重矩阵的更新。
+
+2.3 嵌入层
+嵌入层是现代深度学习推荐系统的关键模块，其通常位于输入层之后，在特征交互和密集层之前。
+嵌入层就像深度神经网络的其他层一样，是从数据和端到端训练中学习得到的。我们接下来看看如何使用嵌入层。
+
+2.3.1 点积
+我们可以计算用户嵌入和项目嵌入之间的点积以获得最终分数，即用户与项目交互的可能性。
+您可以应用 sigmoid 激活函数作为将输出转换为 0 到 1 之间的概率的最后一步。
+dotproduct:u.v=∑ai.bi
+004-002.png
+图 2. 具有两个嵌入表和点积输出的神经网络。来自 Using Neural Networks for Your Recommender System。
+此方法等效于矩阵分解或交替最小二乘法 (ALS)。
+
+2.3.2 全连接层
+如果使用多个非线性层构建一个深层结构，则神经网络性能会更佳。您可以通过使用 ReLU 激活将嵌入层的输出馈送到多个完全连接的层来扩展先前的模型。
+这里在设计上的一个选择点是：如何组合两个嵌入向量。您可以只连接嵌入向量，也可以将向量按元素相乘，类似于点积。点积输出后跟着多个隐藏层。
+004-003.png
+图 3. 具有两个嵌入表和多个全连接层的神经网络，将用户和产品嵌入进行concatenate 或者进行元素级别（element-wise）相乘。
+多个隐藏层可以处理结果向量。来自 Using Neural Networks for Your Recommender System。
+
+2.3.3 元数据信息
+到目前为止，我们只使用了用户 ID 和产品 ID 作为输入，但我们通常有更多可用信息。
+比如用户的其他信息可以是性别、年龄、城市（地址）、自上次访问以来的时间或用于付款的信用卡。
+一件商品通常有过去 7 天内售出的品牌、价格、类别或数量。这些辅助信息可以帮助模型更好地泛化。
+我们可以修改神经网络以使用附加特征作为输入。
+004-004.png
+图 4. 具有元信息和多个全连接层的神经网络，我们向神经网络架构添加更多信息，比如可以添加例如城市、年龄、分支机构、类别和价格等辅助信息。
+来自 Using Neural Networks for Your Recommender System。
+
+至此，我们可知，基于嵌入层我们可以得到一个基础的推荐系统网络。
+
+2.3.4 经典架构
+接下来，我们看看 2016 年 Google 的 Wide and Deep 和 Facebook 2019 年的 DLRM。
+
+2.3.4.1 Google’s Wide and Deep
+Google 的 Wide 和 Deep 包含两个组件：
+    与之前的神经网络相比，Wide部分是新组件，它是输入特征的线性组合，具有类似线性/逻辑回归的逻辑。
+    Deep部分的作用是：把高维，稀疏的类别特征通过嵌入层处理为低维稠密向量，并将输出与连续值特征连接起来。连接之后的向量传递到MLP层。
+两个部分的输出通过加权相加合并在一起得到最终预测值。
+
+对于推荐系统模型来说，理想状态是同时具有记忆能力和泛化能力。
+    泛化能力指的是模型对未观察到的特征或者罕见特征可以做出预测。
+        比如通过学习得到一个规则是：有翅膀会飞，所以看见喜鹊就可以推断它会飞，这就是泛化能力。
+        Deep部分 通过基于用户/物品特征进行归纳以提供优秀的泛化能力。
+    记忆能力指的是模型可以记住大量的历史行为特征，然后从历史数据之中学习到特征的共性，而且可以把这些共性作为推荐依据。
+        泛化能力会有疏漏，比如企鹅不会飞。
+
+        Wide部分 就可以通过历史等记忆信息来提供优秀的记忆能力，纠正例外情况。逻辑回归这样的简单模型如果发现一个“强特征”，
+        就会在训练时候把其相应的权重调整得非常大，从而实现了对这个特征的记忆，这就是所谓的模型“记忆能力”。
+
+        我们给出论文（https://arxiv.org/abs/1606.07792）之中的架构图，可以看到，wide部分选择了两个特征：用户安装的app，曝光app，然后加交叉得到了一个特征，
+        比如用户已经安装了netflix，而且在应用商店中曾经看过pandora应用，那么交叉特征：AND(user_installed_app=netflix, impression_app=pandora)就会被设置为1。
+        这就是希望模型可以记住这样的规则：“如果用户已经安装了应用 A，是否会安装 B”。
+因此，Wide and Deep 模型兼具逻辑回归和深度神经网络的优点，可以记忆大量历史行为，又拥有强大的表达能力。`
+004-005.png
+在HugeCTR之中，可以看到是通过如下方式来组织模型的。
+004-006.jpg
+
+2.3.4.2 Facebook 的 DLRM
+Facebook 的 DLRM（Deep Learning Recommendation Model） 与带有元数据的神经网络架构具有相似的结构，但有一些区别。
+数据集可以包含多个分类特征。DLRM 要求所有分类输入都通过具有相同维度的嵌入层馈送。
+
+接下来，连续输入被串联并通过多个完全连接的层馈送，称为底层多层感知器 (MLP)。
+底部 MLP 的最后一层与嵌入层向量具有相同的维度。
+
+DLRM 使用新的组合层。它在所有嵌入向量对和底部 MLP 输出之间应用逐元素（element-wise）乘法。
+这就是每个向量具有相同维度的原因。生成的向量被连接起来并且发送给另一组全连接层（顶部 MLP）。
+004-007.jpg
+图 5. Wide and Deep 架构在左侧可视化，DLRM 架构在右侧。
+本节图片来自 Using Neural Networks for Your Recommender System。
+
+2.4 推荐系统的嵌入层
+因为CTR领域之中，特征的特点是高维，稀疏，所以对于离散特征，一般使用one-hot编码。
+但是将One-hot类型的特征输入到DNN中，会导致网络参数太多，比如输入层有1000万个节点，隐层有500节点，则参数有50亿个。
+
+所以人们增加了一个Embedding层用于降低维度，这样就对单个特征的稀疏向量进行紧凑化处理。但是有时还是不奏效，人们也可以将特征分为不同的field。
+
+2.4.1 特色
+和与其他类型 DL 模型相比，DL 推荐模型的嵌入层是比较特殊的：它们为模型贡献了大量参数，但几乎不需要计算，而计算密集型denser layers的参数数量则要少得多。
+
+举一个具体的例子：原始的Wide and Deep模型有几个大小为[1024,512,256]的dense layers，
+因此这些dense layers只有几百万个参数，而其嵌入层可以有数十亿个条目，以及数十亿个参数。
+这与例如在 NLP 领域流行的 BERT 模型架构形成对比，BERT的嵌入层只有数万个条目，总计数百万个参数，但其稠密的前馈和注意力层则由数亿个参数组成。
+这种差异还导致另一个结果：与其他类型的 DL 模型相比，DL 推荐网络输入数据的每字节计算量通常要小得多。
+
+2.4.2 优化嵌入重要性
+对于推荐系统，嵌入层的优化十分重要。要理解为什么嵌入层和相关操作的优化很重要，首先要看看推荐系统嵌入层训练所遇到的挑战：数据量和速度。
+
+2.4.2.1 数据量
+随着在线平台和服务获得数亿甚至数十亿用户，并且提供的独特产品数量达到数十亿，嵌入表的规模越来越大也就不足为奇了。
+
+据报道，Instagram 一直致力于开发大小达到 10 TB 的推荐模型。同样，百度的一个广告排名模型，也达到了 10 TB 的境界。
+在整个行业中，数百 GB 到 TB 的模型正变得越来越流行，例如Pinterest 的 4-TB 模型和Google 的 1.2-TB 模型。
+因此，在单个计算节点上拟合 TB 级模型是一项重大挑战，更不用说在单个计算加速器（比如GPU）了。NVIDIA A100 GPU 只是配备了 80 GB 的 HBM。
+
+2.4.2.2 访问速度
+训练推荐系统本质上是一项内存带宽密集型任务。这是因为每个训练样本或批次通常涉及嵌入表中的少量实体。
+必须检索这些条目才能计算前向传递，然后在后向传递中更新。
+
+CPU 主存容量大但带宽有限，高端机型通常在几十 GB/s 范围内。
+另一方面，GPU 的内存容量有限，但带宽很高。NVIDIA A100 80-GB GPU 提供 2 TB/s 的内存带宽。
+
+2.4.3 解决方案
+针对这些挑战，人们已经找到了一些解决方案，但是都存在一些问题，比如：
+    将整个嵌入表保存在主存储器上解决了大小问题。然而，它通常会导致训练吞吐量极慢，而新数据的数量和速度往往使这种吞吐量相形见绌，从而导致系统无法及时重新训练。
+    或者，可以把嵌入层分布在多个 GPU 和多个节点上，但这样却陷入通信瓶颈，导致 GPU 计算利用率不足，训练性能与纯 CPU 训练不相上下。
+因此，嵌入层是推荐系统的主要瓶颈之一。优化嵌入层是解锁 GPU 高计算吞吐量的关键。
+
+0x03 DeepFM
+因为我们要用DeepFM作为示例，所以需要介绍一下基本内容。
+我们选择 IJCAI 2017 的论文 DeepFM: A Factorization-Machine based Neural Network for CTR Prediction 的内容做分析。
+
+3.1 CTR特点
+CTR预估数据有如下特点：
+    输入的数据有类别型和连续型。类别型数据会编码成one-hot，连续型数据可以先离散化再变吗为one-hot，也可以保留原值。
+    数据的维度非常高。
+    数据非常稀疏。
+    特征按照Field分组。
+CTR预估重点在于学习组合特征。Google论文研究结论为：高阶和低阶的组合特征都非常重要，应该同时学习到这两种组合特征。所以关键点是如何高效的提取这些组合特征。
+
+3.2 DeepFM
+DeepFM将Google的wide & deep模型进行改进：
+    将Wide & Deep 部分的wide部分由 人工特征工程 + LR 转换为FM模型，FM提取低阶组合特征，Deep提取高阶组合特征，这样避开了人工特征工程，提高了模型的泛化能力；
+    FM模型和Deep部分共享Embedding，使得DeepFM成为一种端到端的模型，提高了模型的训练效率，不但训练更快而且更准确。
+具体模型架构如下： 004-008.png
+
+0x04 HugeCTR嵌入层
+为了克服嵌入挑战并实现更快的训练，HugeCTR 实现了自己的嵌入层，其中包括一个 GPU 加速的哈希表、以节省内存的方式实现的高效稀疏优化器以及各种嵌入分布策略。
+它利用NCCL作为其 GPU 间通信原语。
+
+4.1 哈希表
+哈希表的实现基于RAPIDS cuDF，它是一个 GPU DataFrame 库，是 NVIDIA 的 RAPIDS 数据科学平台的一部分。
+cuDF GPU 哈希表可以比基于 Threading Building Blocks (TBB) 实现的 concurrent_hash_map 更快，而且达到 35 倍的加速。
+
+4.2 模型并行
+HugeCTR 提供了一个模型并行的嵌入表，其分布在集群中的所有 GPU 上，集群由多个节点和多个 GPU 组成。另一方面，密集层采用数据并行性，每个 GPU 上有一个副本。
+考虑到可扩展性，HugeCTR 默认支持嵌入层的模型并行性。
+004-009.png
+图 6. HugeCTR 模型和数据并行架构。来自 https://developer.nvidia.com/blog/announcing-nvidia-merlin-application-framework-for-deep-recommender-systems/。
+
+4.3 通信
+HugeCTR 使用NCCL 完成了高速和可扩展的节点间和节点内通信。对于有很多输入特征的情况，HugeCTR嵌入表可以分割成多个槽。
+属于同一个槽的特征被独立转换为对应的嵌入向量，然后被规约为单个嵌入向量。这允许用户将每个插槽中的有效功能的数量有效地减少到可管理的程度。
+
+4.4 印证
+我们可以从 https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/Recommendation/DLRM#hybrid-parallel-multi-gpu-with-all-2-all-communication 之中看到混合并行的思路，
+可以和HugeCTR印证（因为我们使用DeepFM来剖析，所以DLRM只用于印证）。
+
+4.4.1 DLRM
+在DLRM之中，为了处理类别数据，嵌入层将每个类别映射到密集表示，然后再输入多层感知器 (MLP)。数值特征则可以直接输入 MLP。
+在下一级，通过取所有嵌入向量对和处理过的密集特征之间的点积，显式计算不同特征的二阶交互。
+这些成对的交互被馈送到顶级 MLP 以计算用户和产品对之间交互的可能性。
+
+与其他基于 DL 的推荐方法相比，DLRM 在两个方面有所不同。
+首先，它明确计算了特征交互，同时将交互顺序限制为成对交互（pairwise interactions）。
+其次，DLRM 将每个嵌入的特征向量（对应于类别特征）视为一个单元，而其他方法（例如 Deep and Cross）将特征向量中的每个元素视为一个新单元，
+这样会会产生不同的交叉项。这些设计选择有助于降低计算和内存成本，同时也可以提供相当的准确性。
+004-010.png
+图来自 https://developer.nvidia.com/blog/announcing-nvidia-merlin-application-framework-for-deep-recommender-systems/。
+
+4.4.2 混合并行
+许多推荐模型包含非常大的嵌入表。因此，该模型往往太大，无法装入单个设备。
+这可以通过使用CPU或其他GPU作为 "内存捐赠者(memory donors)"，以模型并行的方式进行训练而轻松解决。
+然而，这种方法是次优的，因为 "内存捐赠者 "设备的计算没有被利用。
+
+针对 DLRM，我们对模型的底层部分使用模型并行方法（嵌入表+底层MLP），而对模型的顶层部分使用通常的数据并行方法（Dot Interaction + Top MLP）。
+这样，我们可以训练比通常适合单个GPU的模型大得多的模型，同时通过使用多个GPU使训练更快。我们称这种方法为混合并行。
+004-011.png
+图来自 https://github.com/NVIDIA/DeepLearningExamples/tree/master/PyTorch/Recommendation/DLRM#hybrid-parallel-multi-gpu-with-all-2-all-communication 。
+
+4.5 使用
+我们可以采用如下两种方式来使用 hugeCTR 嵌入层：
+    将原生 NVIDIA Merlin HugeCTR 框架用于训练和推理工作。
+    使用 NVIDIA Merlin HugeCTR TensorFlow 插件，该插件旨在与 TensorFlow 无缝协作。
+
+5.1.2.3 TensorFlow
+我们可以从TF源码注释里面看到pooling的一些使用。
+
+tensorflow/python/ops/embedding_ops.py 是关于embedding的使用。
+
+    combiner: A string specifying the reduction op. Currently "mean", "sqrtn"
+      and "sum" are supported. "sum" computes the weighted sum of the embedding
+      results for each row. "mean" is the weighted sum divided by the total
+      weight. "sqrtn" is the weighted sum divided by the square root of the sum
+      of the squares of the weights. Defaults to `mean`.
+tensorflow/python/feature_column/feature_column.py 是关于feature column的使用。
+
+sparse_combiner: A string specifying how to reduce if a categorical column
+  is multivalent. Except `numeric_column`, almost all columns passed to
+  `linear_model` are considered as categorical columns.  It combines each
+  categorical column independently. Currently "mean", "sqrtn" and "sum" are
+  supported, with "sum" the default for linear model. "sqrtn" often achieves
+  good accuracy, in particular with bag-of-words columns.
+    * "sum": do not normalize features in the column
+    * "mean": do l1 normalization on features in the column
+    * "sqrtn": do l2 normalization on features in the column
+在：tensorflow/lite/kernels/embedding_lookup_sparse.cc 的注释有直接从嵌入表之中look up的使用。
+
+// Op that looks up items from a sparse tensor in an embedding matrix.
+// The sparse lookup tensor is represented by three individual tensors: lookup,
+// indices, and dense_shape. The representation assume that the corresponding
+// dense tensor would satisfy:
+//   * dense.shape = dense_shape
+//   * dense[tuple(indices[i])] = lookup[i]
+//
+// By convention, indices should be sorted.
+//
+// Options:
+//   combiner: The reduction op (SUM, MEAN, SQRTN).
+//     * SUM computes the weighted sum of the embedding results.
+//     * MEAN is the weighted sum divided by the total weight.
+//     * SQRTN is the weighted sum divided by the square root of the sum of the
+//       squares of the weights.
+//
+// Input:
+//     Tensor[0]: Ids to lookup, dim.size == 1, int32.
+//     Tensor[1]: Indices, int32.
+//     Tensor[2]: Dense shape, int32.
+//     Tensor[3]: Weights to use for aggregation, float.
+//     Tensor[4]: Params, a matrix of multi-dimensional items,
+//                dim.size >= 2, float.
+//
+// Output:
+//   A (dense) tensor representing the combined embeddings for the sparse ids.
+//   For each row in the sparse tensor represented by (lookup, indices, shape)
+//   the op looks up the embeddings for all ids in that row, multiplies them by
+//   the corresponding weight, and combines these embeddings as specified in the
+//   last dimension.
+//
+//   Output.dim = [l0, ... , ln-1, e1, ..., em]
+//   Where dense_shape == [l0, ..., ln] and Tensor[4].dim == [e0, e1, ..., em]
+//
+//   For instance, if params is a 10x20 matrix and ids, weights are:
+//
+//   [0, 0]: id 1, weight 2.0
+//   [0, 1]: id 3, weight 0.5
+//   [1, 0]: id 0, weight 1.0
+//   [2, 3]: id 1, weight 3.0
+//
+//   with combiner=MEAN, then the output will be a (3, 20) tensor where:
+//
+//   output[0, :] = (params[1, :] * 2.0 + params[3, :] * 0.5) / (2.0 + 0.5)
+//   output[1, :] = (params[0, :] * 1.0) / 1.0
+//   output[2, :] = (params[1, :] * 3.0) / 3.0
+//
+//   When indices are out of bound, the op will not succeed.
+另外，其他框架/模型实现也有使用加权平均（比如使用Attention），或者加入时序信息。
+
+5.2 构建
+这是一个比较复杂的过程，从前文我们知道，DataReader最后把各种输入都拷贝到了其成员变量 output_ 之上。
+004-017.jpg
+那么，嵌入层是如何利用到 output_ 中的sparse特征的呢？我们需要一步一步来看。
+
+
+
+
+
+系列共十篇！
 ============================================================================================================
 
 

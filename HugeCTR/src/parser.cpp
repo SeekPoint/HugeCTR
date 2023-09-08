@@ -89,6 +89,9 @@ create_pipeline_internal 主要包含了四步：
 我们总结一下。DataReader 包含了流水线的前两级，目前分析之涉及到了第一级。
  在 Reader之中，有一个 worker group，里面包含了若干worker，也有若干对应线程来运行这些 worker，
  Data Reader worker 就是流水线第一级。第二级 collecotr 我们会暂时跳过去在下一章进行介绍。
+
+ 5.2.1 流水线
+parser.cpp 之中，如下代码建立了流水线，我们省略了很多代码，可以看到先调用 create_datareader 建立了reader，然后才建立 embedding。
  */
 template <typename TypeKey>
 void Parser::create_pipeline_internal(std::shared_ptr<IDataReader>& init_data_reader,
@@ -132,7 +135,7 @@ void Parser::create_pipeline_internal(std::shared_ptr<IDataReader>& init_data_re
                                      enable_overlap, resource_manager);
       }  // Create Data Reader
 
-      // Create Embedding
+      // Create Embedding --- 这里创建了embedding
       {
         for (unsigned int i = 1; i < j_layers_array.size(); i++) {
           // 网路配置的每层是从底到上，因此只要遇到非嵌入层，就不检查其后的层了
@@ -168,6 +171,9 @@ void Parser::create_pipeline_internal(std::shared_ptr<IDataReader>& init_data_re
 
             DistributedSlotEmbeddingHash：所有特征都存储于不同特征域/槽上，不管槽索引号是多少，这些特征都根据特征的索引号分布到不同的GPU上。
                  这意味着同一插槽中的特征可能存储在不同的 GPU 中，这就是将其称为“分布式插槽”的原因。
+
+5.2.3 建立嵌入
+如下代码建立了嵌入。
              */
             create_embedding<TypeKey, float>()(
                 sparse_input_map, train_tensor_entries_list, evaluate_tensor_entries_list,

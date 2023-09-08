@@ -15,6 +15,14 @@ optimizer = hugectr.CreateOptimizer(optimizer_type = hugectr.Optimizer_t.Adam,
                                     beta1 = 0.9,
                                     beta2 = 0.999,
                                     epsilon = 0.0000001)
+# 之前提到了Parser是解析配置文件，HugeCTR 也支持代码设置，
+# 比如下面就设定了两个DataReaderSparseParam，
+# 也有对应的DistributedSlotSparseEmbeddingHash。
+
+# 0x05 初始化
+# 5.1 配置
+# 前面提到了可以使用代码完成网络配置，我们从下面可以看到，DeepFM 一共有三个embedding层，
+# 分别对应 wide_data 的 sparse 参数映射到dense vector，deep_data 的 sparse 参数映射到dense vector，。
 model = hugectr.Model(solver, reader, optimizer)
 model.add(hugectr.Input(label_dim = 1, label_name = "label",
                         dense_dim = 13, dense_name = "dense",

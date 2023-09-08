@@ -454,29 +454,43 @@ inline void LOG(const Args&... args) {
         注意：如果指定了多个'DataReaderSparseParam'，则任何一对'DataReaderSparseParam'之间都不应有重叠。
         比如，在[wdl样本]（../samples/wdl/wdl.py）中，我们总共有27个插槽；我们将第一个插槽指定为"wide_data"，将接下来的26个插槽指定为"deep_data"。
 
-之前提到了Parser是解析配置文件，HugeCTR 也支持代码设置，
- 比如下面就设定了两个DataReaderSparseParam，
- 也有对应的DistributedSlotSparseEmbeddingHash。
-model = hugectr.Model(solver, reader, optimizer)
-model.add(hugectr.Input(label_dim = 1, label_name = "label",
-                        dense_dim = 13, dense_name = "dense",
-                        data_reader_sparse_param_array =
-                        [hugectr.DataReaderSparseParam("wide_data", 30, True, 1),
-                        hugectr.DataReaderSparseParam("deep_data", 2, False, 26)]))
-model.add(hugectr.SparseEmbedding(embedding_type = hugectr.Embedding_t.DistributedSlotSparseEmbeddingHash,
-                                  workspace_size_per_gpu_in_mb = 23,
-                                  embedding_vec_size = 1,
-                                  combiner = "sum",
-                                  sparse_embedding_name = "sparse_embedding2",
-                                  bottom_name = "wide_data",
-                                  optimizer = optimizer))
-model.add(hugectr.SparseEmbedding(embedding_type = hugectr.Embedding_t.DistributedSlotSparseEmbeddingHash,
-                                  workspace_size_per_gpu_in_mb = 358,
-                                  embedding_vec_size = 16,
-                                  combiner = "sum",
-                                  sparse_embedding_name = "sparse_embedding1",
-                                  bottom_name = "deep_data",
-                                  optimizer = optimizer))
+ 之前提到了Parser是解析配置文件，HugeCTR 也支持代码设置，参考/搜索  [hugectr.DataReaderSparseParam("wide_data", 30, True, 1)
+
+5.1.1 DataReaderSparseParam
+DataReaderSparseParam 定义如下，其中slot_num就代表了这个层拥有几个slot。比如 hugectr.DataReaderSparseParam("deep_data", 2, False, 26) 就代表了有26个slots。
+
+5.1.2 slot概念
+我们从文档之中可以知道，slot的概念就是特征域或者表。
+In HugeCTR, a slot is a feature field or table. The features in a slot can be one-hot or multi-hot.
+The number of features in different slots can be various. You can specify the number of slots (`slot_num`) in the data layer of your configuration file.
+Field 或者 slots（有的文章也称其为Feature Group）就是若干有关联特征的集合，其主要作用就是把相关特征组成一个feature field，
+然后把这个field再转换为一个稠密向量，这样就可以减少DNN输入层规模和模型参数。
+
+比如：用户看过的商品，用户购买的商品，这就是两个Field，具体每个商品则是feature，这些商品共享一个商品列表，或者说共享一份Vocabulary。
+ 如果把每个商品都进行embedding，然后把这些张量拼接起来，那么DNN输入层就太大了。
+ 所以把这些购买的商品归类为同一个field，把这些商品的embedding向量再做pooling之后得到一个field的向量，那么输入层数目就少了很多。
+
+5.1.2.1 FLEN
+FLEN: Leveraging Field for Scalable CTR Prediction 之中有一些论证和几张精彩图例可以来辅助说明这个概念，具体如下：
+
+CTR预测任务中的数据是多域（multi-field categorical ）的分类数据，也就是说，每个特征都是分类的，并且只属于一个字段。
+ 例如，特征 "gender=Female "属于域 "gender"，特征 "age=24 "属于域 "age"，特征 "item category=cosmetics "属于域 "item category"。
+ 特征 "性别 "的值是 "男性 "或 "女性"。特征 "年龄 "被划分为几个年龄组。"0-18岁"，"18-25岁"，"25-30岁"，等等。
+ 人们普遍认为，特征连接（conjunctions）是准确预测点击率的关键。
+ 一个有信息量的特征连接的例子是：年龄组 "18-25 "与性别 "女性 "相结合，用于 "化妆品 "项目类别。
+ 它表明，年轻女孩更有可能点击化妆品产品。
+004-clip-03.png
+FLEN模型中使用了一个filed-wise embedding vector，通过将同一个域（如user filed或者item field）之中的embedding 向量进行求和，来得到域对应的embedding向量。
+
+比如，首先把特征xn转换为嵌入向量 en
+en=Vnxn
+其次，使用 sum-pooling 得到 field-wise embedding vectors。
+em=∑n|F(n)=men
+比如 004-012.png
+最后，把所有field-wise embedding vectors拼接起来。
+ 004-013.png
+系统整体架构如下：
+004-014.png
  */
 struct DataReaderSparseParam {
   std::string top_name;

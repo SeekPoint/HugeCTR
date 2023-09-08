@@ -288,7 +288,26 @@ void SparseEmbeddingFunctors::forward_per_gpu(
     } else {
       hash_table.get_mark(hash_key.get_ptr(), hash_value_index.get_ptr(), nnz, stream);
     }
+    /*5.1.2.2 Pooling
+    具体如何做pooling？HugeCTR有sum或者mean两种操作，具体叫做combiner，比如：
 
+     结合前面图，类别特征就一共有M个slot，对应了M个嵌入表。 004-015.png
+
+     比如在 test/pybind_test/din_matmul_fp32_1gpu.py 之中，可见CateID有11个slots。
+
+      model.add(hugectr.Input(label_dim = 1, label_name = "label",
+                             dense_dim = 0, dense_name = "dense",
+                             data_reader_sparse_param_array =
+                             [hugectr.DataReaderSparseParam("UserID", 1, True, 1),
+                             hugectr.DataReaderSparseParam("GoodID", 1, True, 11),
+                             hugectr.DataReaderSparseParam("CateID", 1, True, 11)]))
+      比如，下图之中，004-016.png
+      一个sample有7个key，分为两个field，就是两个slot。4个key放在第一个slot之上，3个key放到第二个slot上，第三个slot没有key。
+      在查找过程中，会把这些key对应的value查找出来。第一个slot内部会对这些value进行sum或者mean操作得到V1，
+           第二个slot内部对3个value进行sum或者mean操作得到V2，最后会把V1，V2进行concat操作，传送给后续层。
+
+
+                */
     // do sum reduction
     if (combiner == 0) {
       forward_sum(batch_size, slot_num, embedding_vec_size, row_offset.get_ptr(),

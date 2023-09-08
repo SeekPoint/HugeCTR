@@ -27,6 +27,13 @@
 #endif
 
 namespace HugeCTR {
+/*
+ 这里建立了一些embedding，比如DistributedSlotSparseEmbeddingHash，这些embedding最后保存在 Session 的 embeddings_ 成员变量之中。这里关键有几点：
+        从sparse_input_map之中获取sparse_input信息。
+        使用sparse.train_sparse_tensors来构建 DistributedSlotSparseEmbeddingHash。
+         所以我们可以知道，DataReader.output_ 成员变量将要和 DistributedSlotSparseEmbeddingHash 联系到一起。这里是embedding的输入。
+        输出参数 train_tensor_entries_list 会作为 embedding 的输出返回，这是一个指针
+*/
 template <typename TypeKey, typename TypeFP>
 void create_embedding<TypeKey, TypeFP>::operator()(
     std::map<std::string, SparseInput<TypeKey>>& sparse_input_map,
@@ -233,6 +240,11 @@ void create_embedding<TypeKey, TypeFP>::operator()(
     default:
       CK_THROW_(Error_t::UnspecificError, "create embedding with no specified embedding type.");
   }  // switch
+
+  // 这里设置输出
+//  5.2.4 如何得到输出
+//      上面 create_embeddings 方法调用时候，train_tensor_entries_list 作为参数传入。
+//      在create_embeddings结尾处，会取出 embedding 的输出，设置在 train_tensor_entries_list 之中
   for (size_t i = 0; i < resource_manager->get_local_gpu_count(); i++) {
     train_tensor_entries_list[i].push_back(
         {top_name, (embeddings.back()->get_train_output_tensors())[i]});

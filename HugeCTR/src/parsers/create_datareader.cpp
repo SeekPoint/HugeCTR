@@ -37,6 +37,26 @@ DataReader 是流水线的主体，它实际包含了流水线的前两级：dat
         Norm：普通文件读取。
         Parquet ：parquet格式的文件。
         Raw：Raw 数据集格式与 Norm 数据集格式的不同之处在于训练数据出现在一个二进制文件中。
+
+
+5.2.2 建立 DataReader
+我们来看看如何建立 Reader，依然省略大部分代码。主要和sparse输入相关的有如下：
+    create_datareader 的参数有sparse_input_map，这是一个引用。
+    依据配置对 sparse_input_map 进行设置。
+    依据参数名字找到 sparse_input。
+    把 reader 的output_ 之中的 sparse_tensors_map 赋值到 sparse_input 之中。
+    就是这行代码 copy(data_reader_tk->get_sparse_tensors(sparse_name), sparse_input->second.train_sparse_tensors); 把 reader 的 output_ 之中的 sparse_tensors_map 赋值到 sparse_input 之中。
+    所以reader里面最终设置的是 sparse_input_map 之中某一个 sparse_input->second.train_sparse_tensors。
+    sparse_input_map 接下来就被传入到 create_embedding 之中。
+其中关键所在见下面代码注释
+
+所以逻辑拓展如下：
+
+a) create_pipeline_internal 生成了 sparse_input_map，作为参数传递给 create_datareader；
+b) create_datareader 之中对sparse_input_map进行操作，使其指向了 DataReader.output_.sparse_tensors_map；
+c) sparse_input_map 作为参数传递给 create_embedding，具体如下：create_embedding<TypeKey, float>()(sparse_input_map,......)
+d) 所以，create_embedding 最终用到的就是 GPU 之上的sparse_input_map;
+004-018.jpg
 */
 namespace HugeCTR {
 template <typename TypeKey>
@@ -91,6 +111,7 @@ void create_datareader<TypeKey>::operator()(
   auto j_sparse = get_json(j, "sparse");
   std::vector<std::string> sparse_names;
 
+  // 依据配置对 sparse_input_map 进行设置
   for (unsigned int i = 0; i < j_sparse.size(); i++) {
     const nlohmann::json& js = j_sparse[i];
     const auto sparse_name = get_value_from_json<std::string>(js, "top");
@@ -311,6 +332,7 @@ void create_datareader<TypeKey>::operator()(
 
     for (unsigned int i = 0; i < j_sparse.size(); i++) {
       const std::string& sparse_name = sparse_names[i];
+      // 根据名字找到sparse输入
       const auto& sparse_input = sparse_input_map.find(sparse_name);
 
       auto copy = [](const std::vector<SparseTensorBag>& tensorbags,
@@ -320,6 +342,7 @@ void create_datareader<TypeKey>::operator()(
           sparse_tensors[j] = SparseTensor<TypeKey>::stretch_from(tensorbags[j]);
         }
       };
+      // 关键所在，把 reader 的output_ 之中的 sparse_tensors_map 赋值到 sparse_input 之中
       copy(data_reader_tk->get_sparse_tensors(sparse_name),
            sparse_input->second.train_sparse_tensors);
       copy(data_reader_eval_tk->get_sparse_tensors(sparse_name),
