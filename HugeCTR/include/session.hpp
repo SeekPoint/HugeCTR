@@ -33,6 +33,16 @@ namespace HugeCTR {
  * This is a class supporting basic usages of hugectr, which includes
  * train; evaluation; get loss; load and download trained parameters.
  * To learn how to use those method, please refer to main.cpp.
+ *
+ 0x02 Session
+既然知道了 Session 是核心，我们就通过 Session 看看如何构建 HugeCTR。
+2.1 Session 定义
+networks_ ：模型网络信息。
+embeddings_ ：模型嵌入层信息。
+ExchangeWgrad ：交换梯度的类。
+evaluate_data_reader_ ： 读取 evalution。
+train_data_reader_ ：读取训练数据到嵌入层。
+resource_manager_ ：GPU 资源，比如 handle 和 Stream
  */
 class Session {
  public:
@@ -127,16 +137,16 @@ class Session {
   }
 
  private:
-  std::vector<std::shared_ptr<Network>> networks_;      /**< networks (dense) used in training. */
-  std::vector<std::shared_ptr<IEmbedding>> embeddings_; /**< embedding */
+  std::vector<std::shared_ptr<Network>> networks_;      /**< networks (dense) used in training.  模型网络信息 */
+  std::vector<std::shared_ptr<IEmbedding>> embeddings_; /**< embedding  模型嵌入层信息。 */
   std::shared_ptr<IDataReader> init_data_reader_;
   std::shared_ptr<IDataReader>
-      train_data_reader_; /**< data reader to reading data from data set to embedding. */
-  std::shared_ptr<IDataReader> evaluate_data_reader_; /**< data reader for evaluation. */
+      train_data_reader_; /**< data reader to reading data from data set to embedding. 读取训练数据到嵌入层。 */
+  std::shared_ptr<IDataReader> evaluate_data_reader_; /**< data reader for evaluation.  读取 evalution。 */
   std::shared_ptr<ResourceManager>
-      resource_manager_; /**< GPU resources include handles and streams etc.*/
+      resource_manager_; /**< GPU resources include handles and streams etc.  GPU 资源，比如 handle 和 Stream。 */
   std::shared_ptr<Parser> parser_;
-  std::shared_ptr<ExchangeWgrad> exchange_wgrad_;
+  std::shared_ptr<ExchangeWgrad> exchange_wgrad_;   //交换梯度的类。
   Error_t download_params_to_files_(std::string weights_file, std::string dense_opt_states_file,
                                     const std::vector<std::string>& embedding_files,
                                     const std::vector<std::string>& sparse_opt_state_files);

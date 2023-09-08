@@ -78,10 +78,16 @@ static void check_device(int device_id, int min_major, int min_minor) {
 
 }  // end namespace
 
+//2.2 构造函数
+//    构造函数大致分为以下步骤：
+//        使用 create_pipeline 创建流水线。
+//        初始化模型网络。
+//        初始化参数和优化器状态。
 Session::Session(const SolverParser& solver_config, const std::string& config_file)
     : resource_manager_(ResourceManagerExt::create(solver_config.vvgpu, solver_config.seed,
                                                    solver_config.device_layout)),
       solver_config_(solver_config) {
+  // 检查设备
   for (auto dev : resource_manager_->get_local_gpu_device_id_list()) {
     if (solver_config.use_mixed_precision) {
       check_device(dev, 7,
@@ -91,18 +97,23 @@ Session::Session(const SolverParser& solver_config, const std::string& config_fi
     }
   }
 
+  // 生成 Parser，用来解析配置
   parser_.reset(new Parser(config_file, solver_config.batchsize, solver_config.batchsize_eval,
                            solver_config.num_epochs < 1, solver_config.i64_input_key,
                            solver_config.use_mixed_precision, solver_config.enable_tf32_compute,
                            solver_config.scaler, solver_config.use_algorithm_search,
                            solver_config.use_cuda_graph));
 
+  // 建立流水线, create_datareader创建了几个 reader。
+  // 其实就是 Session 之中的几个成员变量，
+  // 分别用于训练，评估。
   parser_->create_pipeline(init_data_reader_, train_data_reader_, evaluate_data_reader_,
                            embeddings_, networks_, resource_manager_, exchange_wgrad_);
 
 #ifndef DATA_READING_TEST
 #pragma omp parallel num_threads(networks_.size())
   {
+    // 多线程并行初始化模型
     size_t id = omp_get_thread_num();
     networks_[id]->initialize();
     if (solver_config.use_algorithm_search) {
@@ -112,10 +123,13 @@ Session::Session(const SolverParser& solver_config, const std::string& config_fi
   }
 #endif
 
+  // 加载dense feature需要的参数
   init_or_load_params_for_dense_(solver_config.model_file);
 
+  // 加载sparse feature需要的参数
   init_or_load_params_for_sparse_(solver_config.embedding_files);
 
+  // 加载信息
   load_opt_states_for_sparse_(solver_config.sparse_opt_states_files);
   load_opt_states_for_dense_(solver_config.dense_opt_states_file);
 
@@ -399,24 +413,39 @@ void Session::train_overlapped() {
   }
 }
 
+//0x05 训练
+//    具体训练代码逻辑如下：
+//        需要 reader 先读取一个 batchsize 的数据。
+//        开始解析数据。
+//        嵌入层进行前向传播，即从参数服务器读取embedding，进行处理。
+//        对于网络层进行前向传播和后向传播，具体区分是多卡，单卡，多机，单机等。
+//        嵌入层反向操作。
+//        多卡之间交换dense参数的梯度。
+//        嵌入层更新sparse参数。
+//        各个流进行同步。
+//训练流程如下：001-004.jpg  至此，我们大体知道了 HugeCTR如何初始化和训练，下一篇我们介绍如何读取数据。
 bool Session::train() {
   try {
+    // 确保 train_data_reader_ 已经启动
     if (train_data_reader_->is_started() == false) {
       CK_THROW_(Error_t::IllegalCall,
                 "Start the data reader first before calling Session::train()");
     }
 
 #ifndef DATA_READING_TEST
+    // 需要 reader 先读取一个 batchsize 的数据。
     long long current_batchsize = train_data_reader_->read_a_batch_to_device_delay_release();
     if (!current_batchsize) {
-      return false;
+      return false; // 读不到就退出，没有数据了
     }
-#pragma omp parallel num_threads(networks_.size())
+#pragma omp parallel num_threads(networks_.size())  //其后语句将被networks_.size()个线程并行执行
     {
       size_t id = omp_get_thread_num();
       CudaCPUDeviceContext ctx(resource_manager_->get_local_gpu(id)->get_device_id());
       cudaStreamSynchronize(resource_manager_->get_local_gpu(id)->get_stream());
     }
+
+    // reader 可以开始解析数据
     train_data_reader_->ready_to_collect();
 #ifdef ENABLE_PROFILING
     global_profiler.iter_check();
@@ -427,32 +456,40 @@ bool Session::train() {
       train_overlapped();
     } else {
       for (const auto& one_embedding : embeddings_) {
+        // 嵌入层进行前向传播，即从参数服务器读取embedding，进行处理
         one_embedding->forward(true);
       }
 
       // Network forward / backward
-      if (networks_.size() > 1) {
+      if (networks_.size() > 1) {  // 因为之前是把模型分别拷贝到GPU之上，所以size大于1，就说明多卡
+        // 单机多卡或多机多卡
 // execute dense forward and backward with multi-cpu threads
 #pragma omp parallel num_threads(networks_.size())
         {
+          // dense网络的前向反向
           size_t id = omp_get_thread_num();
           long long current_batchsize_per_device =
               train_data_reader_->get_current_batchsize_per_device(id);
+          // 前向操作
           networks_[id]->train(current_batchsize_per_device);
           const auto& local_gpu = resource_manager_->get_local_gpu(id);
           local_gpu->set_compute_event_sync(local_gpu->get_stream());
           local_gpu->wait_on_compute_event(local_gpu->get_comp_overlap_stream());
         }
       } else if (resource_manager_->get_global_gpu_count() > 1) {
+        // 多机单卡
         long long current_batchsize_per_device =
             train_data_reader_->get_current_batchsize_per_device(0);
+        // 前向操作
         networks_[0]->train(current_batchsize_per_device);
         const auto& local_gpu = resource_manager_->get_local_gpu(0);
         local_gpu->set_compute_event_sync(local_gpu->get_stream());
         local_gpu->wait_on_compute_event(local_gpu->get_comp_overlap_stream());
       } else {
+        // 单机单卡
         long long current_batchsize_per_device =
             train_data_reader_->get_current_batchsize_per_device(0);
+        // 前向操作
         networks_[0]->train(current_batchsize_per_device);
         const auto& local_gpu = resource_manager_->get_local_gpu(0);
         local_gpu->set_compute_event_sync(local_gpu->get_stream());
@@ -462,6 +499,7 @@ bool Session::train() {
 
       // Embedding backward
       for (const auto& one_embedding : embeddings_) {
+        // 嵌入层反向操作
         one_embedding->backward();
       }
 
@@ -470,6 +508,7 @@ bool Session::train() {
 #pragma omp parallel num_threads(networks_.size())
         {
           size_t id = omp_get_thread_num();
+          // 多卡之间交换dense参数的梯度
           exchange_wgrad(id);
           networks_[id]->update_params();
         }
@@ -478,10 +517,11 @@ bool Session::train() {
         networks_[0]->update_params();
       }
       for (const auto& one_embedding : embeddings_) {
+        // 嵌入层更新sparse参数
         one_embedding->update_params();
       }
 
-      // Join streams
+      // Join streams 各个流进行同步
       if (networks_.size() > 1) {
 #pragma omp parallel num_threads(networks_.size())
         {

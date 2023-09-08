@@ -25,6 +25,8 @@ namespace HugeCTR {
  *
  * An extended GPU Resource manager
  */
+//2.2.1.3 拓展
+//    ResourceManagerExt 是在 ResourceManagerCore 基础之上进行再次封装，其核心就是 core_，这是一个 ResourceManagerCore 类型。我们用 ResourceManagerExt 来分析。
 class ResourceManagerExt : public ResourceManager {
   std::shared_ptr<ResourceManager> core_;
 
@@ -36,6 +38,7 @@ class ResourceManagerExt : public ResourceManager {
   ResourceManagerExt(std::shared_ptr<ResourceManager> core);
 
  public:
+  //其创建代码如下，可以看到其利用 MPI 做了一些通信上的配置：
   static std::shared_ptr<ResourceManager> create(
       const std::vector<std::vector<int>>& visible_devices, unsigned long long seed,
       DeviceMap::Layout layout = DeviceMap::LOCAL_FIRST);
@@ -43,7 +46,7 @@ class ResourceManagerExt : public ResourceManager {
   ResourceManagerExt(const ResourceManagerExt&) = delete;
   ResourceManagerExt& operator=(const ResourceManagerExt&) = delete;
 
-  // from ResourceManagerBase
+  // from ResourceManagerBase  具体资源上的配置还是调用了<ResourceManager> core_ 来完成。
   void set_local_gpu(std::shared_ptr<GPUResource> gpu_resource, size_t local_gpu_id) override {
     core_->set_local_gpu(gpu_resource, local_gpu_id);
   }

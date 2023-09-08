@@ -54,6 +54,7 @@ SigmoidLayer<T>::SigmoidLayer(const Tensor2<T>& in_tensor, const Tensor2<T>& out
   out_tensors_.push_back(out_tensor);
 }
 
+//其前向传播如下：
 template <typename T>
 void SigmoidLayer<T>::fprop(bool is_train) {
   CudaDeviceContext context(get_device_id());
@@ -90,6 +91,7 @@ void SigmoidLayer<__half>::fprop(bool is_train) {
 #endif
 }
 
+//其后向传播如下：
 template <typename T>
 void SigmoidLayer<T>::bprop() {
   CudaDeviceContext context(get_device_id());

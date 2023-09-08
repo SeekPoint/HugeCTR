@@ -121,6 +121,8 @@ enum class Regularizer_t { L1, L2 };
 
 enum class Alignment_t { Auto, None };
 
+/*4.5.2 层实现
+HugeCTR 属于一个具体而微的深度学习系统，它实现的具体层类型如下：*/
 enum class Layer_t {
   BatchNorm,
   BinaryCrossEntropyLoss,

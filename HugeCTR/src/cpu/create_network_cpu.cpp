@@ -106,6 +106,7 @@ void create_layers(const nlohmann::json& j_array, std::vector<TensorEntry>& tens
     }
 
     std::vector<TensorEntry> output_tensor_entries;
+    //在create_layers之中有如下代码
     auto input_output_info = get_input_tensor_and_output_name(j, tensor_entries);
     if (layer_type == Layer_t::CrossEntropyLoss || layer_type == Layer_t::BinaryCrossEntropyLoss ||
         layer_type == Layer_t::MultiCrossEntropyLoss) {

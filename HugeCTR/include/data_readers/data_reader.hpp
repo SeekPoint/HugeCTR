@@ -273,6 +273,7 @@ class DataReader : public IDataReader {
 
   const std::vector<TensorBag2> &get_dense_tensors() const { return output_->dense_tensors; }
 
+  //我们以 norm 为例进行解析，首先提一下，其内部建立了 WorkerGroup。
   void create_drwg_norm(std::string file_name, Check_t check_type,
                         bool start_reading_from_beginning = true) override {
     source_type_ = SourceType_t::FileList;

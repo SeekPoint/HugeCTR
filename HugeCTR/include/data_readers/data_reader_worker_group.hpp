@@ -65,6 +65,7 @@ class DataReaderWorkerGroup {
   /**
    * Create threads to run data reader workers
 >>>>>>> v3.1_preview
+   然后创建了多个线程 data_reader_threads_ 分别运行这些 woker。
    */
   void create_data_reader_threads() {
     if (data_readers_.empty()) {

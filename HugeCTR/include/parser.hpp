@@ -169,6 +169,9 @@ class InferenceParser {
  *  1. Embedding should be the first element of layers.
  *  2. layers should be listed from bottom to top.
  * @endverbatim
+ * 0x03 Parser
+前面提到了Parser，我们接下来就看看。Parser 负责解析配置文件，建立流水线。
+ 其类似的支撑文件还有 SolverParser，Solver，InferenceParser 等等。可以说，Parser 是自动化运作的关键，是支撑系统的灵魂。
  */
 class Parser {
  private:

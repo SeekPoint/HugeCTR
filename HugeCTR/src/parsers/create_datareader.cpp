@@ -24,7 +24,20 @@
 #ifdef ENABLE_MPI
 #include <mpi.h>
 #endif
+/*
+4.3.3 create_datareader
+DataReader 是流水线的主体，它实际包含了流水线的前两级：data reader worker 与 data collector。
 
+4.3.3.2 建立reader
+因为代码太长，我们只保留部分关键代码。我们先看create_datareader里面做了什么：
+ 这里有两个 reader，一个train_data_reader和一个evaluate_data_reader，
+ 也就是一个用于训练，一个用于评估。然后会为他们建立workgroup。
+
+对于Reader，HugeCTR 提供了三种实现：
+        Norm：普通文件读取。
+        Parquet ：parquet格式的文件。
+        Raw：Raw 数据集格式与 Norm 数据集格式的不同之处在于训练数据出现在一个二进制文件中。
+*/
 namespace HugeCTR {
 template <typename TypeKey>
 void create_datareader<TypeKey>::operator()(
