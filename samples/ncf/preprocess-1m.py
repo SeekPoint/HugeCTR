@@ -123,7 +123,7 @@ from ctypes import c_longlong as ll
 from ctypes import c_uint
 from ctypes import c_float
 from ctypes import c_int
-
+# 我们从 samples/ncf/preprocess-1m.py 之中找出一个代码来看看 csr 文件的格式。
 def write_hugeCTR_data(huge_ctr_data, filename='huge_ctr_data.dat'):
     print("Writing %d samples"%huge_ctr_data.shape[0])
     with open(filename, 'wb') as f:

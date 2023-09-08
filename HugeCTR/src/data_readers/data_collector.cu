@@ -18,7 +18,8 @@
 #include <data_readers/data_collector.hpp>
 
 namespace HugeCTR {
-
+//5.3.3 split
+//    label 和 dense 早已经拷贝到了GPU之上，这步做的是分成block，然后使用 GPU thread 进行操作。
 template <typename TypeComp>
 __global__ void split_kernel__(int batchsize, float* label_ptr, int label_dim, TypeComp* dense_ptr,
                                int dense_dim, const float* label_dense, int label_dense_dim) {
@@ -71,6 +72,10 @@ void split(Tensor2<float>& label_tensor, Tensor2<TypeComp>& dense_tensor,
 
   return;
 }
+//5.2.2 拷贝操作
+//    这里就是从源数据拷贝到目标数据，并且是逐个参数进行拷贝。这个是设备之内的拷贝
+//逻辑如下，多了一步从 ThreadBuffer 到 BroadcastBuffer 的操作。
+//    003-011.jpg
 
 template <typename T>
 void broadcast(const std::shared_ptr<ThreadBuffer>& thread_buffer,
@@ -85,17 +90,19 @@ void broadcast(const std::shared_ptr<ThreadBuffer>& thread_buffer,
   int local_gpu_count = resource_manager->get_local_gpu_count();
 
 #pragma omp parallel for num_threads(local_gpu_count)
-  for (int i = 0; i < local_gpu_count; ++i) {
+  for (int i = 0; i < local_gpu_count; ++i) {  // 遍历本地的GPU
     auto local_gpu = resource_manager->get_local_gpu(i);
 
     CudaDeviceContext ctx(local_gpu->get_device_id());
 
-    for (int param_id = 0; param_id < param_num; ++param_id) {
+    for (int param_id = 0; param_id < param_num; ++param_id) {  // 遍历嵌入层
+      // 从 thread_buffer 拷贝到 broadcast_buffer
       auto src_sparse_tensor =
           SparseTensor<T>::stretch_from(thread_buffer->device_sparse_buffers[param_id]);
       auto dst_sparse_tensor =
           SparseTensor<T>::stretch_from(broadcast_buffer->sparse_buffers[i * param_num + param_id]);
 
+      // 拷贝sparse参数
       if (thread_buffer->is_fixed_length[param_id] &&
           last_batch_nnz_[i * param_num + param_id] == src_sparse_tensor.nnz()) {
         CK_CUDA_THROW_(cudaMemcpyAsync(dst_sparse_tensor.get_value_ptr(),
@@ -110,6 +117,7 @@ void broadcast(const std::shared_ptr<ThreadBuffer>& thread_buffer,
       }
     }
 
+    // 拷贝dense参数
     auto dst_dense_tensor = Tensor2<float>::stretch_from(broadcast_buffer->dense_tensors[i]);
     auto src_dense_tensor = Tensor2<float>::stretch_from(thread_buffer->device_dense_buffers);
     CK_CUDA_THROW_(cudaMemcpyAsync(
@@ -117,6 +125,7 @@ void broadcast(const std::shared_ptr<ThreadBuffer>& thread_buffer,
         src_dense_tensor.get_ptr() + i * batch_size_per_gpu * (label_dim + dense_dim),
         batch_size_per_gpu * (label_dim + dense_dim) * sizeof(float), cudaMemcpyDeviceToDevice,
         local_gpu->get_p2p_stream()));
+    // 同步
     CK_CUDA_THROW_(cudaStreamSynchronize(local_gpu->get_p2p_stream()));
   }
 }

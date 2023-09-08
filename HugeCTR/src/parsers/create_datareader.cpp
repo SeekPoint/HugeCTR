@@ -253,6 +253,11 @@ void create_datareader<TypeKey>::operator()(
       return slot_offset;
     };
 
+    /*
+    DataReaderWorkerGroup 负责具体读数据操作。
+    4.1 构建
+    在 create_datareader 之中，有如下代码建立 DataReaderWorkerGroup，分别对应了三种group。
+    */
     switch (format) {
       case DataReaderType_t::Norm: {
         bool start_right_now = repeat_dataset;

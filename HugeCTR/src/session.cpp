@@ -424,6 +424,12 @@ void Session::train_overlapped() {
 //        嵌入层更新sparse参数。
 //        各个流进行同步。
 //训练流程如下：001-004.jpg  至此，我们大体知道了 HugeCTR如何初始化和训练，下一篇我们介绍如何读取数据。
+/*===============================================================================================*/
+//5.3 读取到output
+//目前的流程是：DataFile ---> Host buffer ----> ThreadBuffer ----> BroadcastBuffer。
+//现在数据已经拷贝到了 GPU 之上的 BroadcastBuffer，我们需要看看最后训练时候怎么拿到数据。
+//5.3.1 Train
+//我们首先回到 train 函数，其调用了 read_a_batch_to_device_delay_release 来从 BroadcastBuffer 拷贝数据。
 bool Session::train() {
   try {
     // 确保 train_data_reader_ 已经启动
@@ -434,7 +440,7 @@ bool Session::train() {
 
 #ifndef DATA_READING_TEST
     // 需要 reader 先读取一个 batchsize 的数据。
-    long long current_batchsize = train_data_reader_->read_a_batch_to_device_delay_release();
+    long long current_batchsize = train_data_reader_->read_a_batch_to_device_delay_release(); // 读取数据
     if (!current_batchsize) {
       return false; // 读不到就退出，没有数据了
     }

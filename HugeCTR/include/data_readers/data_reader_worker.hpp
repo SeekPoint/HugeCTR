@@ -26,6 +26,18 @@
 #include <vector>
 
 namespace HugeCTR {
+/*
+其构建代码如下，需要注意，
+    有一个继承于基类的变量 std::shared_ptr buffer_ 指向的是 ThreadBuffer。
+    变量 host_sparse_buffer_ 是构建在 Host 之上，而非GPU之上，这个 host_sparse_buffer_ 作用是文件中读取数据，解析成csr，放置到 host_sparse_buffer_ 之上。
+    关于变量 DataReaderSparseParam 的说明，这是一个DataReaderSparseParam 数组，如果做如下设置，则 params_ 包含三个元素，分别对应分了 user, good, cate。
+model.add(hugectr.Input(label_dim = 1, label_name = "label",
+                        dense_dim = 0, dense_name = "dense",
+                        data_reader_sparse_param_array =
+                        [hugectr.DataReaderSparseParam("UserID", 1, True, 1),
+                        hugectr.DataReaderSparseParam("GoodID", 1, True, 11),
+                        hugectr.DataReaderSparseParam("CateID", 1, True, 11)]))
+*/
 template <class T>
 class DataReaderWorker : public IDataReaderWorker {
  private:
@@ -44,6 +56,7 @@ class DataReaderWorker : public IDataReaderWorker {
   Tensor2<float> host_dense_buffer_;
   std::vector<CSR<T>> host_sparse_buffer_;
 
+  //read_new_file 完成了对文件的读取。
   void read_new_file() {
     constexpr int MAX_TRY = 10;
     for (int i = 0; i < MAX_TRY; i++) {
@@ -70,6 +83,7 @@ class DataReaderWorker : public IDataReaderWorker {
     CK_THROW_(Error_t::BrokenFile, "failed to read a file");
   }
 
+  //Reader构建时候，会建立一个 checker_，用来从文件读取数据。
   void create_checker() {
     switch (check_type_) {
       case Check_t::Sum:
@@ -121,7 +135,7 @@ class DataReaderWorker : public IDataReaderWorker {
     int label_dim = buffer->label_dim;
     int dense_dim = buffer->dense_dim;
 
-    CudaCPUDeviceContext ctx(gpu_resource->get_device_id());
+    CudaCPUDeviceContext ctx(gpu_resource->get_device_id());  // 得到了本worker对应哪个GPU
     std::shared_ptr<GeneralBuffer2<CudaHostAllocator>> buff =
         GeneralBuffer2<CudaHostAllocator>::create();
 
@@ -136,12 +150,35 @@ class DataReaderWorker : public IDataReaderWorker {
     }
 
     buff->allocate();
+
+    /*
+     具体拓展如下，其中每个thread里面含有一个worker：
+     003-005.jpg
+     或者我们进一步简化几个内存类，得到如下，DataReaderWorker 操作 DataReader 之中的一个 ThreadBuffer，
+     003-006.jpg
+     */
   }
 
+  /*
+   4.7.3 读取批次数据
+      read_a_batch 完成具体解析数据集工作。
+          首先从文件读取数据。
+          等待 ThreadBuffer（就是DataReader的thread_buffers_成员变量）的状态变成ReadyForWrite。
+          解析成csr，放入到 host_dense_buffer_。
+          调用 wait_until_h2d_ready 等待拷贝完成。
+          其次调用cudaMemcpyAsync把数据从 host_dense_buffer_ 拷贝到 ThreadBuffer 之中。这里有两点很重要：
+              目前数据在 host_sparse_buffer_（CPU）之上，需要拷贝到 GPU（目标是 ThreadBuffer 的 device_sparse_buffers 成员变量）。
+              而且，host_sparse_buffer_ 是 CSR 格式，ThreadBuffer 的 device_sparse_buffers 成员变量是SparseTensor格式，需要转换。
+              这里是通过拷贝就进行了转换。
+      有几点如下：
+          nnz 的意思是：non-zero feature number。
+          每一个slot数据对应了一个CSR row。
+  */
   /**
    * read a batch of data from data set to heap.
    */
   void read_a_batch() {
+    //// 得到各种配置
     long long current_batch_size = buffer_->batch_size;
     int label_dim = buffer_->label_dim;
     int dense_dim = buffer_->dense_dim;
@@ -151,7 +188,7 @@ class DataReaderWorker : public IDataReaderWorker {
 
     try {
       if (!checker_->is_open()) {
-        read_new_file();
+        read_new_file();  // 读一个新文件
       }
     } catch (const internal_runtime_error& rt_err) {
       Error_t err = rt_err.get_error();
@@ -159,12 +196,12 @@ class DataReaderWorker : public IDataReaderWorker {
       // Norm/Raw have different behavior to last batch. Norm will fetch the data from the begining
       // of the datset, while Raw will output current_batchsize < batchsize. Comment by Alex Liu
       // (2021.7.4)
-      if (err == Error_t::EndOfFile) {
-        if (!wait_until_h2d_ready()) return;
+      if (err == Error_t::EndOfFile) {  // 文件读完了
+        if (!wait_until_h2d_ready()) return;  // 等待 buffer_ 状态变为 ReadyForWrite
         buffer_->current_batch_size = 0;
-        assert(buffer_->state.load() == BufferState::Writing);
+        assert(buffer_->state.load() == BufferState::Writing);   // 设置
         is_eof_ = true;
-        buffer_->state.store(BufferState::ReadyForRead);
+        buffer_->state.store(BufferState::ReadyForRead);  // 设置状态为可读
 
         while (buffer_->state.load() != BufferState::ReadyForWrite) {
           usleep(2);
@@ -185,17 +222,20 @@ class DataReaderWorker : public IDataReaderWorker {
       each_csr.reset();
     }
     // batch loop
-    for (int batch_idx = 0; batch_idx < buffer_->batch_size; ++batch_idx) {
-      if (batch_idx >= current_batch_size) {
-        for (size_t param_id = 0; param_id < params_.size(); ++param_id) {
+    for (int batch_idx = 0; batch_idx < buffer_->batch_size; ++batch_idx) { //读取batch中一个
+      if (batch_idx >= current_batch_size) { // 如果已经读取batch之中的全部数据了
+        for (size_t param_id = 0; param_id < params_.size(); ++param_id) {  // 多个embedding
+          // 如果是前面那个例子，这里遍历的就是user, good, cate
           auto& param = params_[param_id];
+          // host_sparse_buffer_类型是std::vector<CSR<T>>
           auto& current_csr = host_sparse_buffer_[param_id];
-          for (int k = 0; k < param.slot_num; k++) {
-            current_csr.new_row();
+          for (int k = 0; k < param.slot_num; k++) { // slot数目就是行数
+            current_csr.new_row();  // 增加一行
           }
         }
         if (batch_idx >= batch_size_start_idx &&
             batch_idx < batch_size_end_idx) {  // only read local device dense data
+          // 设置dense
           float* ptr =
               host_dense_buffer_.get_ptr() + (batch_idx - batch_size_start_idx) * label_dense_dim;
 
@@ -209,12 +249,14 @@ class DataReaderWorker : public IDataReaderWorker {
         try {
           if (batch_idx >= batch_size_start_idx &&
               batch_idx < batch_size_end_idx) {  // only read local device dense data
+            // 读取dense参数
             CK_THROW_(checker_->read(reinterpret_cast<char*>(host_dense_buffer_.get_ptr() +
                                                              (batch_idx - batch_size_start_idx) *
                                                                  label_dense_dim),
                                      sizeof(float) * label_dense_dim),
                       "failure in reading label_dense");
           } else {
+            // 读取dense参数
             CK_THROW_(checker_->read(reinterpret_cast<char*>(temp_host_dense_buffer_.get_ptr()),
                                      sizeof(float) * label_dense_dim),
                       "failure in reading label_dense");
@@ -224,11 +266,13 @@ class DataReaderWorker : public IDataReaderWorker {
             auto& current_csr = host_sparse_buffer_[param_id];
             current_csr.set_check_point();
           }
+
+          // 读取sparse参数
           for (size_t param_id = 0; param_id < params_.size(); ++param_id) {
             auto& param = params_[param_id];
             auto& current_csr = host_sparse_buffer_[param_id];
             for (int k = 0; k < param.slot_num; k++) {
-              int nnz;
+              int nnz; // 读取一个int到nnz，就是得到nnz的大小，non-zero feature number
               CK_THROW_(checker_->read(reinterpret_cast<char*>(&nnz), sizeof(int)),
                         "failure in reading nnz");
               if (nnz > (int)buffer_length_ || nnz < 0) {
@@ -236,9 +280,9 @@ class DataReaderWorker : public IDataReaderWorker {
                     "nnz > buffer_length_ | nnz < 0 nnz:" + std::to_string(nnz) +
                     ". Please check if i64_input_key in config is compatible with dataset");
               }
-              current_csr.new_row();
+              current_csr.new_row();  // 换行
               size_t num_value = current_csr.get_num_values();
-
+              // 读取nnz个数据
               CK_THROW_(checker_->read(reinterpret_cast<char*>(
                                            current_csr.get_value_tensor().get_ptr() + num_value),
                                        sizeof(T) * nnz),
@@ -246,7 +290,7 @@ class DataReaderWorker : public IDataReaderWorker {
               current_csr.update_value_size(nnz);
             }
           }
-        } catch (const internal_runtime_error& rt_err) {
+        } catch (const internal_runtime_error& rt_err) {  // 回退
           batch_idx--;  // restart i-th sample
           for (auto& each_csr : host_sparse_buffer_) {
             each_csr.roll_back();
@@ -281,31 +325,42 @@ class DataReaderWorker : public IDataReaderWorker {
     // do h2d
     // wait buffer and schedule
 
+    // 目前数据在 host_sparse_buffer_（CPU）之上，
+    // 需要拷贝到 GPU（目标是 ThreadBuffer 的 device_sparse_buffers 成员变量），
+    // 使用 cudaMemcpyHostToDevice
+
+    // 而且，host_sparse_buffer_ 是 CSR<T> 格式，
+    // ThreadBuffer 的 device_sparse_buffers 成员变量是SparseTensor<T>格式，需要转换
+
     if (!wait_until_h2d_ready()) return;
     buffer_->current_batch_size = current_batch_size;
     {
       CudaCPUDeviceContext context(gpu_resource_->get_device_id());
+      // 目标是 ThreadBuffer 的 device_sparse_buffers 成员变量
       auto dst_dense_tensor = Tensor2<float>::stretch_from(buffer_->device_dense_buffers);
       CK_CUDA_THROW_(cudaMemcpyAsync(dst_dense_tensor.get_ptr(), host_dense_buffer_.get_ptr(),
                                      host_dense_buffer_.get_size_in_bytes(), cudaMemcpyHostToDevice,
                                      gpu_resource_->get_memcpy_stream()));
 
-      for (size_t param_id = 0; param_id < params_.size(); ++param_id) {
+      for (size_t param_id = 0; param_id < params_.size(); ++param_id) {  // 遍历嵌入层
         auto dst_sparse_tensor =
             SparseTensor<T>::stretch_from(buffer_->device_sparse_buffers[param_id]);
         if (buffer_->is_fixed_length[param_id] &&
             last_batch_nnz_[param_id] == host_sparse_buffer_[param_id].get_num_values()) {
+          // 拷贝到GPU，同时也进行了转换，提取了CSR的成员变量，拷贝到了SparseTensor的对应地址
           CK_CUDA_THROW_(cudaMemcpyAsync(dst_sparse_tensor.get_value_ptr(),
                                          host_sparse_buffer_[param_id].get_value_tensor().get_ptr(),
                                          host_sparse_buffer_[param_id].get_num_values() * sizeof(T),
                                          cudaMemcpyHostToDevice,
                                          gpu_resource_->get_memcpy_stream()));
         } else {
+          // 拷贝到GPU
           sparse_tensor_helper::cuda::copy_async(dst_sparse_tensor, host_sparse_buffer_[param_id],
                                                  gpu_resource_->get_memcpy_stream());
           last_batch_nnz_[param_id] = host_sparse_buffer_[param_id].get_num_values();
         }
       }
+      // 进行同步
       CK_CUDA_THROW_(cudaStreamSynchronize(gpu_resource_->get_memcpy_stream()));
     }
     assert(buffer_->state.load() == BufferState::Writing);

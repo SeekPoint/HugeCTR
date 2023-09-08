@@ -35,18 +35,20 @@ namespace HugeCTR {
  * @param p_loop_flag a flag to control the loop,
           and break loop when IDataReaderWorker is destroyed.
  */
-
+// 所以，这里就设定了哪个样本应该放到哪个卡上，例如，下面4个线程，分别对应了 GPU 0 和 GPU 1。  003-004.jpg
+//4.5 线程主体函数
+//    data_reader_thread_func_ 是工作线程的主体函数，里面设定了本线程的设备，然后调用了 IDataReaderWorker 完成读取数据。
 static void data_reader_thread_func_(const std::shared_ptr<IDataReaderWorker>& data_reader,
                                      int* p_loop_flag, int device_id) {
   try {
-    CudaCPUDeviceContext context(device_id);
+    CudaCPUDeviceContext context(device_id); // 设定了本线程的设备
 
     while ((*p_loop_flag) == 0) {
       usleep(2);
     }
 
     while (*p_loop_flag) {
-      data_reader->read_a_batch();
+      data_reader->read_a_batch(); // 然后开始读取文件数据
     }
   } catch (const std::runtime_error& rt_err) {
     std::cerr << rt_err.what() << std::endl;
@@ -58,7 +60,7 @@ class DataReaderWorkerGroup {
  protected:
   int data_reader_loop_flag_{0}; /**< p_loop_flag a flag to control the loop */
   DataReaderType_t data_reader_type_;
-  std::vector<std::shared_ptr<IDataReaderWorker>>
+  std::vector<std::shared_ptr<IDataReaderWorker>>   //这就是具体读数据的wroker。
       data_readers_; /**< A vector of DataReaderWorker' pointer.*/
   std::shared_ptr<ResourceManager> resource_manager_;
 

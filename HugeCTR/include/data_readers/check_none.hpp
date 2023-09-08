@@ -21,6 +21,7 @@
 
 namespace HugeCTR {
 
+//以 CheckNone 为例，可以看到其就是读取文件。
 class CheckNone : public Checker {
  private:
   const int MAX_TRY{10};

@@ -38,6 +38,30 @@ void split(Tensor2<float> &label_tensor, Tensor2<TypeComp> &dense_tensor,
            const Tensor2<float> &label_dense_buffer, const int label_dense_dim,
            cudaStream_t stream);
 
+/*
+ 0x05 读取到embedding
+我们接下来看看 DataCollector，就是流水线的第二级，就是这里的黄色框 "Copy to GPU"。其实其内部文字修改为：Copy To Embedding 更合适。
+ 003-009.png
+此图显示了“读取文件”、“复制到 GPU”和“训练”阶段如何重叠三个批次以提高 GPU 资源利用率。
+5.1 DataCollector
+我们首先看看DataCollector的定义，这里省略了成员函数，主要成员变量是。
+    std::shared_ptr broadcast_buffer_ : CPU 数据拷贝到 GPU 之上，GPU 上就在这里。
+    std::shared_ptr output_buffer_ ：这个就是 DataReaderOutput，就是 Reader 的成员变量，复制到这里是为了 collector 操作方便。
+    BackgroundDataCollectorThread background_collector_ ：线程主体，主要包括 ThreadBuffer 和 BroadcastBuffer，会把数据从 ThreadBuffer 拷贝到 BroadcastBuffer 之上。
+    std::thread background_collector_thread_ ：工作线程。
+目前具体如下，Collector 之中的 broadcast_buffer_ 和 output_buffer_ 都指向了GPU，但GPU之中尚且没有数据：
+ 003-010.jpg
+ */
+/**
+ * @brief A helper class of data reader.
+ *
+ * This class implement asynchronized data collecting from heap
+ * to output of data reader, thus data collection and training
+ * can work in a pipeline.
+ 5.2 ThreadBuffer 2 BroadBuffer
+5.2.1 工作线程
+BackgroundDataCollectorThread 的作用是把数据从 DataReader 的thread_buffers_拷贝到 broadcast_buffer_。
+ */
 template <typename T>
 void broadcast(const std::shared_ptr<ThreadBuffer> &thread_buffer,
                std::shared_ptr<BroadcastBuffer> &broadcast_buffer,
@@ -82,11 +106,12 @@ class DataCollector {
 
     void start() {
       while (loop_flag_.load()) {
+        // threadbuffer是源数据，broadcast buffer是目标数据
         auto &current_src_buffer = thread_buffers_[counter_];
         // auto &next_src_buffer = thread_buffers_[(counter_ + 1) % thread_buffers_.size()];
         auto &dst_buffer = broadcast_buffer_;
-        auto src_expected = BufferState::ReadyForRead;
-        auto dst_expected = BufferState::ReadyForWrite;
+        auto src_expected = BufferState::ReadyForRead; // 期望源数据是这个状态
+        auto dst_expected = BufferState::ReadyForWrite; // 期望目标数据是这个状态
 
         if (worker_status_[counter_]) {
           counter_ = (counter_ + 1) % thread_buffers_.size();
@@ -100,6 +125,7 @@ class DataCollector {
           assert(current_src_buffer->state.load() == BufferState::Reading);
           assert(dst_buffer->state.load() == BufferState::Writing);
 
+          // 如果源数据是可读或者正在读，并且，目标数据是可写或者正在写，则可以操作
           if (current_src_buffer->current_batch_size == 0) {
             worker_status_[counter_] = 1;
             eof_worker_num_ += 1;
@@ -108,14 +134,15 @@ class DataCollector {
           if (static_cast<size_t>(eof_worker_num_) != thread_buffers_.size() &&
               current_src_buffer->current_batch_size == 0) {
             counter_ = (counter_ + 1) % thread_buffers_.size();
-            dst_buffer->state.store(BufferState::ReadyForWrite);
+            dst_buffer->state.store(BufferState::ReadyForWrite);  // 设定目标数据的状态
             continue;
           }
           dst_buffer->current_batch_size = current_src_buffer->current_batch_size;
           if (current_src_buffer->current_batch_size != 0) {
+            // 进行广播操作
             broadcast<T>(current_src_buffer, dst_buffer, last_batch_nnz_, resource_manager_);
 
-            current_src_buffer->state.store(BufferState::ReadyForWrite);
+            current_src_buffer->state.store(BufferState::ReadyForWrite); // 设定目标数据的状态
             counter_ = (counter_ + 1) % thread_buffers_.size();
           } else {
             memset(worker_status_.data(), 0, sizeof(char) * worker_status_.size());
@@ -123,9 +150,10 @@ class DataCollector {
             counter_ = 0;
           }
 
+          // 会通知源数据可以继续读取了
           dst_buffer->state.store(BufferState::ReadyForRead);
         } else {
-          usleep(2);
+          usleep(2);  // 否则等待一会
         }
       }
     }
@@ -164,7 +192,10 @@ class DataCollector {
     background_collector_.stop();
     background_collector_thread_.join();
   }
-
+//我们看看 read_a_batch_to_device。这里 read_a_batch_to_device_delay_release 和 read_a_batch_to_device 是沿用旧版本命名，已经和目前状况不符合。
+//
+//具体逻辑是：看看 broadcast_buffer_ 的状态是不是可以读取 ReadyForRead，如果不可以，就等一会。
+//如果可以，就继续，即遍历GPU，逐个从broadcast拷贝到output（也是设备之间的拷贝），也对 label 和 dense 进行split。
   long long read_a_batch_to_device() {
     // MESSAGE_("data collector waiting read_a_batch_to_device");
     BufferState expected = BufferState::ReadyForRead;
@@ -186,18 +217,22 @@ class DataCollector {
         auto label_tensor = Tensor2<float>::stretch_from(output_buffer_->label_tensors[i]);
         auto label_dense_tensor = Tensor2<float>::stretch_from(broadcast_buffer_->dense_tensors[i]);
 
+        // 遍历 sparse 参数
         for (size_t param_id = 0; param_id < output_buffer_->sparse_name_vec.size(); ++param_id) {
           const auto &top_name = output_buffer_->sparse_name_vec[param_id];
           int idx_broadcast = i * broadcast_buffer_->param_num + param_id;
+          // broadcast 的是源
           auto src_sparse_tensor =
               SparseTensor<T>::stretch_from(broadcast_buffer_->sparse_buffers[idx_broadcast]);
           if (output_buffer_->sparse_tensors_map.find(top_name) ==
               output_buffer_->sparse_tensors_map.end()) {
             CK_THROW_(Error_t::IllegalCall, "can not find sparse name");
           }
+          // output是目标
           auto dst_sparse_tensor =
               SparseTensor<T>::stretch_from(output_buffer_->sparse_tensors_map[top_name][i]);
 
+          // 从broadcast拷贝到output
           if (broadcast_buffer_->is_fixed_length[idx_broadcast] &&
               last_batch_nnz_[idx_broadcast] == src_sparse_tensor.nnz()) {
             CK_CUDA_THROW_(cudaMemcpyAsync(dst_sparse_tensor.get_value_ptr(),
@@ -205,6 +240,7 @@ class DataCollector {
                                            src_sparse_tensor.nnz() * sizeof(T),
                                            cudaMemcpyDeviceToDevice, local_gpu->get_stream()));
           } else {
+            // 从broadcast拷贝到output
             sparse_tensor_helper::cuda::copy_async(dst_sparse_tensor, src_sparse_tensor,
                                                    cudaMemcpyDeviceToDevice,
                                                    local_gpu->get_stream());
@@ -213,8 +249,10 @@ class DataCollector {
         }
         const int label_dense_dim = output_buffer_->label_dense_dim;
 
+        // 拷贝label和dense
         if (output_buffer_->use_mixed_precision) {
           auto dense_tensor = Tensor2<__half>::stretch_from(output_buffer_->dense_tensors[i]);
+          // 进行分块
           split(label_tensor, dense_tensor, label_dense_tensor, label_dense_dim,
                 local_gpu->get_stream());
         } else {
@@ -229,6 +267,7 @@ class DataCollector {
     return current_batch_size;
   }
 
+  //这样后续就可以训练了，后续是通过 finalize_batch 之中进行读取。
   void finalize_batch() {
     for (size_t i = 0; i < resource_manager_->get_local_gpu_count(); i++) {
       const auto &local_gpu = resource_manager_->get_local_gpu(i);

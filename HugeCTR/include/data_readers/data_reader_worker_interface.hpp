@@ -23,6 +23,7 @@
 
 namespace HugeCTR {
 
+//DataReaderWorker 是解析数据的业务模块。IDataReaderWorker 是 基类，其buffer_是关键，其指向了ThreadBuffer。
 class IDataReaderWorker {
  public:
   virtual void read_a_batch(){};
@@ -45,7 +46,7 @@ class IDataReaderWorker {
 
   int worker_id_;
   int worker_num_;
-  std::shared_ptr<GPUResource> gpu_resource_;
+  std::shared_ptr<GPUResource> gpu_resource_;  // 这是本worker的GPU资源
 
   bool is_eof_;
   int *loop_flag_;
@@ -57,7 +58,7 @@ class IDataReaderWorker {
                     const std::shared_ptr<ThreadBuffer> &buff)
       : worker_id_(worker_id),
         worker_num_(worker_num),
-        gpu_resource_(gpu_resource),
+        gpu_resource_(gpu_resource),  // 设定GPU资源
         is_eof_(is_eof),
         loop_flag_(loop_flag),
         buffer_(buff) {}

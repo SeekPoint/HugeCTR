@@ -438,6 +438,46 @@ inline void LOG(const Args&... args) {
   return;
 }
 
+/*
+ DataReaderSparseParam 是依据配置得到的Sparse参数的元信息，其主要成员变量如下：
+
+    sparse_name是其后续层引用的稀疏输入张量的名称。没有默认值，应由用户指定。
+
+    nnz_per_slot是每个插槽的指定sparse输入的最大特征数。
+       'nnz_per_slot'可以是'int'，即每个slot的平均nnz，因此每个实例的最大功能数应该是'nnz_per_slot*slot_num'。
+       或者可以使用List[int]初始化'nnz_per_slot'，则每个样本的最大特征数应为'sum(nnz_per_slot)'，在这种情况下，数组'nnz_per_slot'的长度应与'slot_num'相同。
+   'is_fixed_length'用于标识所有样本中每个插槽的categorical inputs是否具有相同的长度。
+
+   如果不同的样本对于每个插槽具有相同数量的特征，则用户可以设置“is_fixed_length=True”，Hugetr可以使用此信息来减少数据传输时间。
+
+   slot_num指定用于数据集中此稀疏输入的插槽数。
+        注意：如果指定了多个'DataReaderSparseParam'，则任何一对'DataReaderSparseParam'之间都不应有重叠。
+        比如，在[wdl样本]（../samples/wdl/wdl.py）中，我们总共有27个插槽；我们将第一个插槽指定为"wide_data"，将接下来的26个插槽指定为"deep_data"。
+
+之前提到了Parser是解析配置文件，HugeCTR 也支持代码设置，
+ 比如下面就设定了两个DataReaderSparseParam，
+ 也有对应的DistributedSlotSparseEmbeddingHash。
+model = hugectr.Model(solver, reader, optimizer)
+model.add(hugectr.Input(label_dim = 1, label_name = "label",
+                        dense_dim = 13, dense_name = "dense",
+                        data_reader_sparse_param_array =
+                        [hugectr.DataReaderSparseParam("wide_data", 30, True, 1),
+                        hugectr.DataReaderSparseParam("deep_data", 2, False, 26)]))
+model.add(hugectr.SparseEmbedding(embedding_type = hugectr.Embedding_t.DistributedSlotSparseEmbeddingHash,
+                                  workspace_size_per_gpu_in_mb = 23,
+                                  embedding_vec_size = 1,
+                                  combiner = "sum",
+                                  sparse_embedding_name = "sparse_embedding2",
+                                  bottom_name = "wide_data",
+                                  optimizer = optimizer))
+model.add(hugectr.SparseEmbedding(embedding_type = hugectr.Embedding_t.DistributedSlotSparseEmbeddingHash,
+                                  workspace_size_per_gpu_in_mb = 358,
+                                  embedding_vec_size = 16,
+                                  combiner = "sum",
+                                  sparse_embedding_name = "sparse_embedding1",
+                                  bottom_name = "deep_data",
+                                  optimizer = optimizer))
+ */
 struct DataReaderSparseParam {
   std::string top_name;
   std::vector<int> nnz_per_slot;

@@ -312,6 +312,29 @@ https://www.cnblogs.com/rossiXYZ/p/15905658.html
 002-007.jpg
 
 
+https://www.cnblogs.com/rossiXYZ/p/15916979.html
+[源码解析] NVIDIA HugeCTR，GPU版本参数服务器--- (4)
+我们再看看3.2.1版本的代码，也选取了部分成员变量  === 》 从本文看，应该是这个版本！！！
+
+0x06 总结
+具体逻辑如下，本章节之中，各个buffer之间拷贝，是依据其状态是 ReadyForRead 和 ReadyForWrite 来完成的。
+最终sparse 参数的embedding是在DataReaderOutput，即后续 GPU 上的计算是从output开始的。
+003-012.jpg
+
+
+4.7.4 小结
+我们总结逻辑如下，线程一直调用 data_reader_thread_func_ 来循环读取：
+003-007.jpg
+另外一个逻辑视角是：
+    多线程调用 data_reader_thread_func_，其使用 read_a_batch 从数据文件之中读取数据解析为CSR。每一个embedding层 对应一个CSR。
+    CSR 被放入 DataReaderWorker 的 host_sparse_buffer_。
+    随着batch不断读取，CSR 行数在不断增加，每一个slot对应了一行，所以一个batch的行数就是 batch_size * slot_num。
+    使用 cudaMemcpyAsync 把CSR从 host_sparse_buffer_ 拷贝到ThreadBuffer（位于GPU）。ThreadBuffer是 SparseTensor 类型了。
+    目前CSR数据就在 GPU 之上了。
+这里简化了多GPU，多worker 的情况。
+003-008.jpg
+
+
 系列共六篇！
 ============================================================================================================
 

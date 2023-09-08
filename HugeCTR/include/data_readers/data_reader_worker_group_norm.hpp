@@ -23,6 +23,8 @@ namespace HugeCTR {
 /*
  * 4.3.3.3 DataReaderWorkerGroupNorm
 在 DataReaderWorkerGroupNorm 之中，建立了DataReaderWorker，其中 file_list_ 是需要读取的数据文件。
+
+ 最重要的是构建 DataReaderWorker 时候，设定了每个DataReaderWorker 对应哪些GPU资源。
  */
 template <typename TypeKey>
 class DataReaderWorkerGroupNorm : public DataReaderWorkerGroup {
@@ -60,12 +62,13 @@ class DataReaderWorkerGroupNorm : public DataReaderWorkerGroup {
     set_resource_manager(resource_manager_);
     for (int i = 0; i < num_threads; i++) {
       std::shared_ptr<IDataReaderWorker> data_reader(new DataReaderWorker<TypeKey>(
+          // 这里设定了每个 DataReaderWorker 对应的 GPU 资源
           i, num_threads, resource_manager_->get_local_gpu(i % local_gpu_count),
           &data_reader_loop_flag_, output_buffers[i], file_list, max_feature_num_per_sample, repeat,
           check_type, params));
       data_readers_.push_back(data_reader);
     }
-    create_data_reader_threads();
+    create_data_reader_threads();  // 建立了多个工作线程
   }
 };
 }  // namespace HugeCTR
