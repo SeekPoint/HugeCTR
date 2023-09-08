@@ -76,7 +76,7 @@ struct TensorScalarTypeFunc<unsigned int> {
 };
 
 }  // namespace
-
+//TensorBuffer2 是张量底层的数据，也许联系到 PyTorch 的 data 或者 storage 可以更好的理解
 class TensorBuffer2 {
  public:
   virtual ~TensorBuffer2() {}
@@ -84,6 +84,13 @@ class TensorBuffer2 {
   virtual void *get_ptr() = 0;
 };
 
+/*4.1.4 TensorBag2
+PyTorch 之中也有一些Bag后缀名字的类，比如 nn.Embedding和nn.EmbeddingBag。
+ 当构建袋子模型时，做一个Embedding跟随Sum或是Mean常见的。
+ 对于可变长度序列，nn.EmbeddingBag 来提供了更加高效和更快速的处理方式，特别是对于可变长度序列。
+
+在 HugeCTR，TensorBag2 可以认为是把 Tensor 放在袋子里统一处理的类
+ */
 class TensorBag2 {
   template <typename T>
   friend class Tensor2;
@@ -103,6 +110,7 @@ class TensorBag2 {
 
   void *get_ptr() { return buffer_->get_ptr(); }
 };
+//以下是两个向量类，用来方便用户使用
 using TensorBags2 = std::vector<TensorBag2>;
 
 template <typename T>
@@ -170,8 +178,9 @@ class Tensor2 {
 };
 
 template <typename T>
-using Tensors2 = std::vector<Tensor2<T>>;
+using Tensors2 = std::vector<Tensor2<T>>; //Tensors2 就是 Tensor2 的一个vector。
 
+//关于 Tensor 和 Bag 的联系，可以参见下面的函数。
 template <typename T>
 Tensors2<T> bags_to_tensors(const std::vector<TensorBag2> &bags) {
   Tensors2<T> tensors;
@@ -190,6 +199,7 @@ std::vector<TensorBag2> tensors_to_bags(const Tensors2<T> &tensors) {
   return bags;
 }
 
+//类似 TensorBag 的功能
 class SparseTensorBag {
   template <typename T>
   friend class SparseTensor;
@@ -218,6 +228,67 @@ class SparseTensorBag {
   const std::vector<size_t> &get_dimensions() const { return dimensions_; }
 };
 
+/*4.1.5 SparseTensor
+SparseTensor 是 Sparse 类型的张量，这是3.2 版本加入的，
+ 目的是为了统一处理CSR格式，或者说是统一处理稀疏矩阵，
+ 可以有效存储和处理大多数元素为零的张量。后续在读取数据到GPU时候会有分析。
+ 我们对比一下 CSR 格式，就可以看出来其内部机制就对应了CSR 的 rowoffset 和 value。其具体定义如下：
+ 示意图如下： 002-004.jpg
+我们从中找出一个例子看看。因为只是用来存储slot里的sparse key，所以没有列号，因为一个slot里的sparse key可以直接顺序存储。
+
+   * For example data:
+   *   4,5,1,2
+       *   3,5,1
+       *   3,2
+       * Will be convert to the form of:
+   * row offset: 0,4,7,9
+       * value: 4,5,1,2,3,5,1,3,2
+       对应下图： 002-005.jpg
+
+PyTorch
+PyTorch 有 sparse_coo_tensor 可以实现类似的功能。PyTorch 支持不同layout的张量，
+ 大家可以从 torch/csrc/utils/tensor_layouts.cpp 找到，
+ 比如 at::Layout::Strided，at::Layout::Sparse，at::Layout::SparseCsr，at::Layout::Mkldnn 等等，
+ 这些对应了不同的内存布局模式。
+
+使用稀疏张量时候，提供一对 dense tensors：一个value张量，一个二维indice张量，也有其他辅助参数。
+
+    >>> i = [[1, 1]]
+    >>> v =  [3, 4]
+    >>> s=torch.sparse_coo_tensor(i, v, (3,))
+    >>> s
+                                tensor(indices=tensor([[1, 1]]),
+                                       values=tensor(  [3, 4]),
+                                       size=(3,), nnz=2, layout=torch.sparse_coo)
+                                    TensorFlow
+    TensorFlow 也有 SparseTensor 类型来表示多维稀疏数据。一个 SparseTensor 使用三个稠密张量来表示：
+
+                            indices 表示稀疏张量的非零元素坐标。
+                            values 则对应每个非零元素的值。
+                            shape 表示本稀疏张量转换为稠密形式后的形状。
+                            比如下面代码：
+
+                            indices = tf.constant([[0, 0], [1, 1], [2,2]], dtype=tf.int64)
+                            values = tf.constant([1, 2, 3], dtype=tf.float32)
+                            shape = tf.constant([3, 3], dtype=tf.int64)
+                            sparse = tf.SparseTensor(indices=indices,
+                                                     values=values,
+                                                     dense_shape=shape)
+                            dense = tf.sparse_tensor_to_dense(sparse, default_value=0)
+                            with tf.Session() as session:
+                                sparse, dense = session.run([sparse, dense])
+                                print('Sparse is :\n', sparse)
+                                print('Dense is :\n', dense)
+         打印出来如下：
+                Sparse is :
+    SparseTensorValue(indices=array([[0, 0],
+                                        [1, 1],
+                                        [2, 2]]), values=array([1., 2., 3.], dtype=float32), dense_shape=array([3, 3]))
+        Dense is :
+               [[1. 0. 0.]
+              [0. 2. 0.]
+              [0. 0. 3.]]
+            */
 template <typename T>
 class SparseTensor {
   std::vector<size_t> dimensions_;
@@ -285,7 +356,7 @@ class SparseTensor {
 
   size_t rowoffset_count() const { return rowoffset_count_; }
 };
-
+//以下是向量类，用来方便用户使用。
 template <typename T>
 using SparseTensors = std::vector<SparseTensor<T>>;
 

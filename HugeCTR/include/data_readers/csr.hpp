@@ -38,6 +38,10 @@ namespace HugeCTR {
  * row offset: 0,4,7,9
  * value: 4,5,1,2,3,5,1,3,2
  * @endverbatim
+ *
+ *3.3 操作类
+3.3.1 定义
+这里只给出成员变量，具体可以和上面csr格式进行印证。
  */
 template <typename T>
 class CSR {
@@ -63,6 +67,7 @@ class CSR {
    * Ctor
    * @param num_rows num of rows is expected
    * @param max_value_size max size of value buffer.
+   * 构造函数之中，会在GPU之上进行分配内存
    */
   CSR(size_t num_rows, size_t max_value_size)
       : num_rows_(num_rows),
@@ -94,6 +99,7 @@ class CSR {
   /**
    * Push back a value to this object.
    * @param value the value to be pushed back.
+   * 这里会插入数据，并且增加value总数。
    */
   inline void push_back(const T& value) {
     if (size_of_value_ >= max_value_size_)
@@ -108,6 +114,7 @@ class CSR {
    * Whenever you want to add a new row, you need to call this.
    * When you have pushed back all the values, you need to call this method
    * again.
+   * new_row 之中会生成新行，并且把目前value总数设置到row_offset之中。
    */
   inline void new_row() {  // call before push_back values in this line
     if (size_of_row_offset_ > num_rows_) CK_THROW_(Error_t::OutOfBound, "CSR out of bound");

@@ -314,6 +314,136 @@ typedef struct Slot_ {
   int nnz;
   unsigned int*  keys; // changeable to `long long` with `"input_key_type"` in `solver` object of the configuration file.
 } Slot;
+
+数据定义（每个样本）：
+
+typedef struct Data_ {
+  int length;                   //此示例中的字节数（可选：仅在 check_sum 模式下）
+  float label[label_dim];
+  float dense[dense_dim];
+  Slot slots[slot_num];
+  char checkbits;               //此样本的校验位（可选：仅在checksum模式下）
+} Data;
+
+typedef struct Slot_ {
+  int nnz;
+  unsigned int*  keys; //可在配置文件的 `solver` 对象中使用 `"input_key_type"` 更改为 `long long`
+} Slot;
+数据字段（field）通常有很多样本。每个样本以格式化为整数的标签开始，然后是nnz（非零数）和使用 long long（或无符号整数）格式的输入key，如图 1（a）所示。
+
+categorical 的输入key分布到插槽（slot）中，不允许重叠。例如：slot[0] = {0,10,32,45}, slot[1] = {1,2,5,67}。如果有任何重叠，它将导致未定义的行为。例如，给定slot[0] = {0,10,32,45}, slot[1] = {1,10,5,67}，查找10键的表将产生不同的结果，结果根据插槽分配给 GPU 的方式。
+   
+2.1.2 文件列表
+文件列表的第一行应该是数据集中数据文件的数量，然后是这些文件的路径，具体如下所示：
+
+$ cat simple_sparse_embedding_file_list.txt
+10
+./simple_sparse_embedding/simple_sparse_embedding0.data
+./simple_sparse_embedding/simple_sparse_embedding1.data
+./simple_sparse_embedding/simple_sparse_embedding2.data
+./simple_sparse_embedding/simple_sparse_embedding3.data
+./simple_sparse_embedding/simple_sparse_embedding4.data
+./simple_sparse_embedding/simple_sparse_embedding5.data
+./simple_sparse_embedding/simple_sparse_embedding6.data
+./simple_sparse_embedding/simple_sparse_embedding7.data
+./simple_sparse_embedding/simple_sparse_embedding8.data
+./simple_sparse_embedding/simple_sparse_embedding9.data
+使用例子如下：
+
+reader = hugectr.DataReaderParams(data_reader_type = hugectr.DataReaderType_t.Norm,
+                                  source = ["./wdl_norm/file_list.txt"],
+                                  eval_source = "./wdl_norm/file_list_test.txt",
+                                  check_type = hugectr.Check_t.Sum)  
+ 2.2 Raw
+Raw 数据集格式与 Norm 数据集格式的不同之处在于训练数据出现在一个二进制文件中，并且使用 int32。图 1 (b) 显示了原始数据集样本的结构。
+
+注意：此格式仅接受独热数据。
+
+Raw数据集格式只能与嵌入类型 LocalizedSlotSparseEmbeddingOneHot 一起使用。
+
+例子：
+
+reader = hugectr.DataReaderParams(data_reader_type = hugectr.DataReaderType_t.Raw,
+                                  source = ["./wdl_raw/train_data.bin"],
+                                  eval_source = "./wdl_raw/validation_data.bin",
+                                  check_type = hugectr.Check_t.Sum)
+ 
+ 2.3 Parquet
+Parquet 是一种面向列的、开源的数据格式。它可用于 Apache Hadoop 生态系统中的任何项目。为了减小文件大小，它支持压缩和编码。图 1 (c) 显示了一个示例 Parquet 数据集。有关其他信息，请参阅parquet 文档。
+
+请注意以下事项：
+
+Parquet 数据加载器当前不支持嵌套列类型。
+不允许列中有任何缺失值。
+与 Norm 数据集格式一样，标签和密集特征列应使用浮点格式。
+Slot 特征列应使用 Int64 格式。
+Parquet 文件中的数据列可以按任何顺序排列。
+要从每个 parquet 文件中的所有行和每个标签、密集（数字）和槽（分类）特征的列索引映射中获取所需信息，需要一个单独的_metadata.json文件。
+例子 _metadata.json：
+
+{
+"file_stats": [{"file_name": "file1.parquet", "num_rows": 6528076}, {"file_name": "file2.parquet", "num_rows": 6528076}],
+"cats": [{"col_name": "C11", "index": 24}, {"col_name": "C24", "index": 37}, {"col_name": "C17", "index": 30}, {"col_name": "C7", "index": 20}, {"col_name": "C6", "index": 19}],
+"conts": [{"col_name": "I5", "index": 5}, {"col_name": "I13", "index": 13}, {"col_name": "I2", "index": 2}, {"col_name": "I10", "index": 10}],
+"labels": [{"col_name": "label", "index": 0}]
+}
+使用如下：
+
+reader = hugectr.DataReaderParams(data_reader_type = hugectr.DataReaderType_t.Parquet,
+                                  source = ["./criteo_data/train/_file_list.txt"],
+                                  eval_source = "./criteo_data/val/_file_list.txt",
+                                  check_type = hugectr.Check_t.Non,
+                                  slot_size_array = [278899, 355877, 203750, 18573, 14082, 7020, 18966, 4, 6382, 1246, 49, 185920, 71354, 67346, 11, 2166, 7340, 60, 4, 934, 15, 204208, 141572, 199066, 60940, 9115, 72, 34])
+我们提供了通过一个选项slot_size_array，可以为每个插槽添加偏移量。slot_size_array是一个长度等于槽数的数组。为了避免添加offset后出现key重复，我们需要保证第i个slot的key范围在0到slot_size_array[i]之间。我们将以这种方式进行偏移：对于第 i 个槽键，我们将其添加偏移量 slot_size_array[0] + slot_size_array[1] + ... + slot_size_array[i - 1]。在上面提到的配置片段中，对于第 0 个插槽，将添加偏移量 0。对于第一个插槽，将添加偏移量 278899。对于第三个插槽，将添加偏移量 634776。
+
+0x03 CSR 格式
+嵌入层是基于CSR格式基础之上搭建的，所以我们首先看看CSR格式。
+
+3.1 什么是CSR
+稀疏矩阵指的是矩阵中的元素大部分是0的矩阵，实际上现实问题中大多数的大规模矩阵都是稀疏矩阵，因此就出现了很多专门针对稀疏矩阵的高效存储格式，Compressed Sparse Row（CSR）就是其中之一。
+
+这是最简单的一种格式，每一个元素需要用一个三元组来表示，分别是（行号，列号，数值），对应上图右边的一列。这种方式简单，但是记录单信息多（行列），每个三元组自己可以定位，因此空间不是最优。
+
+CSR需要三类数据来表达：数值，列号，行偏移。它不是用三元组来表示一个元素，而是一个整体编码方式。
+
+数值：一个元素。
+列号 ：元素的列号，
+行偏移：某一行的第一个元素在values里面的起始偏移位置。
+002-002.jpg
+上图中，第一行元素1是0偏移，第二行元素2是2偏移，第三行元素5是4偏移，第4行元素6是7偏移。最后会在行偏移之后加上矩阵总的元素个数，本例子中是9。
+
+
+
+3.2 HugeCTR 之中的CSR
+我们从中找出一个例子看看。因为只是用来存储slot里的sparse key，所以没有列号，因为一个slot里的sparse key可以直接顺序存储。
+
+* For example data:
+*   4,5,1,2
+*   3,5,1
+*   3,2
+* Will be convert to the form of:
+* row offset: 0,4,7,9
+* value: 4,5,1,2,3,5,1,3,2
+我们再从源码之中找一些信息 samples/ncf/preprocess-20m.py。
+
+def write_hugeCTR_data(huge_ctr_data, filename='huge_ctr_data.dat'):
+    print("Writing %d samples"%huge_ctr_data.shape[0])
+    with open(filename, 'wb') as f:
+        #write header
+        f.write(ll(0)) # 0: no error check; 1: check_num
+        f.write(ll(huge_ctr_data.shape[0])) # the number of samples in this data file
+        f.write(ll(1)) # dimension of label
+        f.write(ll(1)) # dimension of dense feature
+        f.write(ll(2)) # long long slot_num
+        for _ in range(3): f.write(ll(0)) # reserved for future use
+
+        for i in tqdm.tqdm(range(huge_ctr_data.shape[0])):
+            f.write(c_float(huge_ctr_data[i,2])) # float label[label_dim];
+            f.write(c_float(0)) # dummy dense feature
+            f.write(c_int(1)) # slot 1 nnz: user ID
+            f.write(c_uint(huge_ctr_data[i,0]))
+            f.write(c_int(1)) # slot 2 nnz: item ID
+            f.write(c_uint(huge_ctr_data[i,1]))                                         
 ```
 
 The Data field often has a lot of samples. Each sample starts with the labels formatted as integers and followed by `nnz` (number of nonzero) with the input key using the long long (or unsigned int) format as shown in Fig. 1 (a).
