@@ -260,6 +260,7 @@ void forward_mean(size_t batch_size, size_t slot_num, size_t embedding_vec_size,
 
 }  // namespace
 
+
 /**
  * forward propagation on each GPU for LocalizedSlotSparseEmbeddingHash
  * @param batch_size batch size for the current mini-batch computation.
@@ -274,6 +275,9 @@ void forward_mean(size_t batch_size, size_t slot_num, size_t embedding_vec_size,
  * @param hash_value_index hash table value_index(row index of embedding)
  * @param embedding_feature embedding feature (output)
  * @param stream cuda stream
+ 3.3 调用
+为了更好的分析，在看 concurrent_unordered_map 之前，我们需要看看如何调用HashTable。
+ 调用代码是HugeCTR/src/embeddings/forward_per_gpu_functor.cu 之中的forward_per_gpu方法。这里已经是 CUDA 代码了。
  */
 template <typename TypeHashKey, typename TypeEmbeddingComp>
 void SparseEmbeddingFunctors::forward_per_gpu(
@@ -284,6 +288,7 @@ void SparseEmbeddingFunctors::forward_per_gpu(
     cudaStream_t stream) {
   try {
     if (train) {
+      // 这里会调用插入代码
       hash_table.get_insert(hash_key.get_ptr(), hash_value_index.get_ptr(), nnz, stream);
     } else {
       hash_table.get_mark(hash_key.get_ptr(), hash_value_index.get_ptr(), nnz, stream);

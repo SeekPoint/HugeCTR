@@ -162,7 +162,10 @@ __global__ void dump_kernel(KeyType* d_key, ValType* d_val, const Table* table, 
 }
 
 }  // namespace
-
+/*
+ 3.2 HashTableContainer
+container_ 的类型是HashTableContainer，其是 concurrent_unordered_map 的派生类，所以我们还是需要看看 concurrent_unordered_map。
+ */
 template <typename KeyType, typename ValType>
 class HashTableContainer
     : public concurrent_unordered_map<KeyType, ValType, std::numeric_limits<KeyType>::max()> {

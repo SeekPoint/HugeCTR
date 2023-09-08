@@ -74,7 +74,10 @@ class LocalizedSlotSparseEmbeddingHash : public IEmbedding {
       embedding_feature_tensors_;             /**< the output tensor of the forward(). */
   Tensors2<TypeEmbeddingComp> wgrad_tensors_; /**< the input tensor of the backward(). */
 
+//  0x06 优化器
+//      DistributedSlotSparseEmbeddingHash 内部也存在一些优化器。
   std::vector<EmbeddingOptimizer<TypeHashKey, TypeEmbeddingComp>> embedding_optimizers_;
+
   size_t max_vocabulary_size_;
   size_t max_vocabulary_size_per_gpu_;   /**< Max vocabulary size for each GPU. */
   std::vector<size_t> slot_num_per_gpu_; /* slot_num per GPU */

@@ -23,7 +23,25 @@
 #include "HugeCTR/include/embeddings/sparse_embedding_functors.hpp"
 #include "HugeCTR/include/utils.hpp"
 namespace HugeCTR {
-
+/*
+0x05 EmbeddingData
+前面提到了 DistributedSlotSparseEmbeddingHash 如下成员变量会保存一些嵌入表信息。
+EmbeddingData<TypeHashKey, TypeEmbeddingComp> embedding_data_;
+我们来挖掘一下。
+5.1 定义
+        EmbeddingData 定义如下，这里有两套成员变量，Tensors2 和 SparseTensors。
+        Tensors2 如下：
+                train_value_tensors_ 这个就会记录sparse input，是CSR 的value。
+                train_row_offsets_tensors_ 是CSR 的 row offset。
+                train_nnz_array_ 是CSR 相关的nnz。
+                train_output_tensors_ 这个是前向传播的输出。
+        SparseTensors 如下：
+                train_keys_ 会把 value，offset，nnz都整合在一起，这里怀疑是在接口迁移，所以维护了两套。为何迁移？
+                因为train_value_tensors_，train_row_offsets_tensors_，train_nnz_array_ 都是Tensor2，是普通张量，而 train_keys_ 是 SparseTensors，可以一个变量就搞定前面所有概念。
+                valuate_keys_ 是验证集相关。
+所以，embedding_data_ 就是包揽了嵌入层的输入和输出。
+ 需要注意的是，这里都是 Tensors2，可以认为是 Tensor2 的列表，列表之中每一个Tensor2 对应了一个GPU。
+ * */
 template <typename TypeKey, typename TypeEmbeddingComp>
 class EmbeddingData {
  public:
@@ -75,7 +93,11 @@ class EmbeddingData {
   SparseTensors<TypeKey>& get_input_keys(bool is_train) {
     return is_train ? train_keys_ : evaluate_keys_;
   }
-
+/*
+   5.3.2 引用
+ 我们仔细看看 EmbeddingData 的一些成员函数，发现他们都返回了引用。这就是关键，这些成员函数可以修改 EmbeddingData的内部成员变量，比如：get_row_offsets_tensors返回了一个引用。
+ 类似的，比如get_output_tensors，get_input_keys，get_row_offsets_tensors，get_value_tensors，get_nnz_array 都返回引用，这说明 EmbeddingData 大部分成员变量都是可以被引用来修改的。
+ * */
   Tensors2<TypeKey>& get_row_offsets_tensors(bool is_train) {
     if (is_train) {
       return train_row_offsets_tensors_;
@@ -111,7 +133,18 @@ class EmbeddingData {
    * @param embedding_vec_size the dim size of the embedding feature vector.
    * @param resource_manager the GPU device resource group
    * @param scaler scaler factor for mixed precision
-   */
+5.2 构建
+这里有两套构建函数，可能维护者在从旧接口切换到新接口。
+   结合前后文，sparse_input 在 DistributedSlotSparseEmbeddingHash 构造函数之中是 train_keys 参数，
+   在EmbeddingData 这里就是train_value_tensors，
+   所以，value_tensors 就是我们要关注的，
+   从注释可以知道，这是输入数据的value tensors，指向了稀疏矩阵的 value vector。
+
+我们最终拓展如下，经过第 C 步之后，DistributedSlotSparseEmbeddingHash的成员变量 也指向了 GPU 内存，
+   这里依据构建函数的不同，train_output_tensors_，和 train_keys_ 可能（可能是因为有两种不同的构造方式，目前只是讨论其中一种）都会指向用户输入训练数据。
+005-003.jpg
+
+  */
   EmbeddingData(const Tensors2<TypeKey>& train_row_offsets_tensors,
                 const Tensors2<TypeKey>& train_value_tensors,
                 const std::vector<std::shared_ptr<size_t>>& train_nnz_array,
@@ -170,6 +203,7 @@ class EmbeddingData {
         evaluate_output_tensors_.push_back(tensor);
       }
 
+      // value，offset，nnz又整合了进来
       for (size_t i = 0; i < local_gpu_count; i++) {
         train_keys_.emplace_back(train_value_tensors_[i], train_row_offsets_tensors_[i],
                                  train_nnz_array_[i]);

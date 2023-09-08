@@ -399,6 +399,7 @@ __global__ void opt_adam_kernel(uint32_t hash_value_index_count_num, int embeddi
   }
 }
 
+//其本质就是更新 hash_table_value，也就是嵌入层的权重。具体我们后文会结合反向传播进行分析。
 // Local update for the Adagrad optimizer: compute the gradients and update the accumulators and the
 // weights
 template <typename TypeKey, typename TypeEmbeddingComp>
@@ -426,7 +427,7 @@ __global__ void opt_adagrad_kernel(uint32_t hash_value_index_count_num, int embe
     accum_ptr[feature_index] = TypeConvertFunc<TypeEmbeddingComp, float>::convert(accum);
     float weight_diff = -lr * gi / (sqrtf(accum) + adagrad.epsilon);
 
-    hash_table_value[feature_index] += weight_diff;
+    hash_table_value[feature_index] += weight_diff;  // 更新权重
   }
 }
 
@@ -596,7 +597,8 @@ __global__ void opt_sgd_atomic_kernel(int nnz, int embedding_vec_size, float lr_
 }
 
 }  // namespace
-
+//6.2 更新
+//    其内部主要是通过 opt_adagrad_kernel 进行更新。
 template <typename TypeHashKey, typename TypeEmbeddingComp>
 void EmbeddingOptimizer<TypeHashKey, TypeEmbeddingComp>::update(
     size_t batch_size, size_t slot_num, size_t embedding_vec_size,

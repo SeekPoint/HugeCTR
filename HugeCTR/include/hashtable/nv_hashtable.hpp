@@ -28,7 +28,14 @@ class HashTableContainer;
  * The HashTable class is wrapped by cudf library for hash table operations on single GPU.
  * In this class, we implement the GPU version of the common used operations of hash table,
  * such as insert() / get() / set() / dump()...
- */
+ * 0x03 HashTable
+因为DistributedSlotSparseEmbeddingHash 用到了 using NvHashTable = HashTable<TypeHashKey, size_t>，
+所以我们先看看 HashTable。这部分对应的是上面总图第一步，就是如何从 hash table 之中拿到低维嵌入表的 index。
+在后文之中，我们用 HashTable/哈希表来指定 DistributedSlotSparseEmbeddingHash 内部使用的真正的哈希表。
+
+3.1 定义
+      HashTable 之中，很重要的成员变量是container_。
+      */
 template <typename KeyType, typename ValType>
 class HashTable {
   const KeyType empty_key = std::numeric_limits<KeyType>::max();

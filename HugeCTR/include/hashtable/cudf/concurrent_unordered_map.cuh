@@ -280,6 +280,12 @@ __host__ __device__ bool operator!=(const cycle_iterator_adapter<T>& lhs,
  * TODO:
  *  - add constructor that takes pointer to hash_table to avoid allocations
  *  - extend interface to accept streams
+
+ 3.4 concurrent_unordered_map
+concurrent_unordered_map 定义在 HugeCTR/include/hashtable/cudf/concurrent_unordered_map.cuh。
+
+这是位于显存中的map。从其注释可知，其支持并发插入，但是不支持同时insert和probping。
+ 结合HugeCTR看，hugeCTR是同步训练，pull操作只会调用 get，push操作只会调用insert，不存在同时insert和probping，所以满足需求。
  */
 template <typename Key, typename Element, Key unused_key, typename Hasher = default_hash<Key>,
           typename Equality = equal_to<Key>,
@@ -561,9 +567,12 @@ int*>(tmp_it), unused, value ); if ( old_val == unused ) { it = tmp_it;
       return iterator( m_hashtbl_values,m_hashtbl_values+hashtbl_size,it);
   }
   */
-
+  // __forceinline__ 的意思是编译为内联函数
+  // __host__ __device__ 表示是此函数同时为主机和设备编译
   __forceinline__ __host__ __device__ const_iterator find(const key_type& k) const {
+    // 对key进行hash操作
     size_type key_hash = m_hf(k);
+    // 进而得到table的相应index
     size_type hash_tbl_idx = key_hash % m_hashtbl_size;
 
     value_type* begin_ptr = 0;
@@ -572,10 +581,12 @@ int*>(tmp_it), unused, value ); if ( old_val == unused ) { it = tmp_it;
     while (0 == begin_ptr) {
       value_type* tmp_ptr = m_hashtbl_values + hash_tbl_idx;
       const key_type tmp_val = tmp_ptr->first;
+      // 找到key，跳出
       if (m_equal(k, tmp_val)) {
         begin_ptr = tmp_ptr;
         break;
       }
+      // key的位置是空，或者在table之内没有找到
       if (m_equal(unused_key, tmp_val) || counter > m_hashtbl_size) {
         begin_ptr = m_hashtbl_values + m_hashtbl_size;
         break;
@@ -586,7 +597,49 @@ int*>(tmp_it), unused, value ); if ( old_val == unused ) { it = tmp_it;
 
     return const_iterator(m_hashtbl_values, m_hashtbl_values + m_hashtbl_size, begin_ptr);
   }
+/*
+  3.4.2 insert
+  插入操作我们就看看之前的 get_insert。
+  hash_table.get_insert(hash_key.get_ptr(), hash_value_index.get_ptr(), nnz, stream);
+  就是以 csr 部分信息作为 hash key，来获得一个低维嵌入表之中的index，在 hash_value_index之中返回。我们首先看一个CSR示例。
 
+      * For example data:
+      *   3356
+      *   667
+      *   588
+      * Will be convert to the form of:
+      * row offset: 0,1,2,3
+      * value: 3356,667,588,3
+
+我们就是使用 3356 作为 hash_key，获取 3356 对应的 hash_value_index，如果能找到就返回，找不到就插入一个构建的value，然后这个 value 会返回给 hash_value_index。
+
+但是这里有几个绕的地方，因为 HashTable内部也分桶，也有自己的key，hash_value，容易和其他数据结构弄混。具体逻辑是：
+      传入一个数字 3356（CSR格式相关），还有一个 value_counter，就是目前 hash_value_index 的数值。
+      先 hash_value = m_hf(3356)。
+      用 current_index = hash_value % hashtbl_size 找到 m_hashtbl_values 之中的位置。
+      用 current_hash_bucket = &(hashtbl_values[current_index]) 这找到了一个bucket。
+      key_type& existing_key = current_hash_bucket->first，这个才是 hash table key
+      volatile mapped_type& existing_value = current_hash_bucket->second，这个才是我们最终需要的 table value。如果没有，就递增传入的 value_counter。
+所以，CSR 3356 是一个one-hot 的index，它对应了embeding表的一个index，但是因为没有那么大的embedding，所以后面会构建一个小数据结构（低维矩阵） hash_value，
+传入的 value_counter 就是这个 hash_value的index，value_counter 是递增的，因为 hash_value 的行号就是递增的。
+
+比如一共有1亿个单词，3356表示第3356个单词。如果想表示 3356，667，588 这三个位置在这一亿个单词是有效的，
+最笨的办法是弄个1亿长度数组，把3356，667，588这三个位置设置为 1，其他位置设置为0，
+但是这样太占据空间且没有意义。如果想省空间，就弄一个hash函数 m_hf，假如是选取最高位数为 value，则得到：
+  m_hf(3356)=3
+  m_hf(667)=6
+  m_hf(588)=5
+3，5，6 就是内部的 hash_value，叫做 hash_value（对应下面代码），对应的内部存储数组叫做 hashtbl_values。
+再梳理一下：3356是哈希表的key，3 是哈希表的value，但是因为分桶了，所以在哈希表内部是放置在 hashtbl_values 之中。
+                    hashtbl_values[3] = 1，hashtbl_values[6] = 2, hashtbl_values[5] =3
+于是 1，2，3 就是我们外部想得到的 3356, 667, 588 对应的数据，就是低维矩阵的 row offset，对应下面代码就是 existing_value。
+ 简化版本的逻辑如下:
+       005-002.jpg
+具体代码如下：
+
+// __forceinline__ 的意思是编译为内联函数
+ // __host__ __device__ 表示是此函数同时为主机和设备编译
+  */
   template <typename aggregation_type, typename counter_type, class comparison_type = key_equal,
             typename hash_value_type = typename Hasher::result_type>
   __forceinline__ __device__ iterator get_insert(const key_type& k, aggregation_type op,
@@ -606,11 +659,11 @@ int*>(tmp_it), unused, value ); if ( old_val == unused ) { it = tmp_it;
     }
     // Otherwise, compute the hash value from the new key
     else {
-      hash_value = m_hf(k);
+      hash_value = m_hf(k);  // 3356作为key，得到了一个hash_value
     }
 
-    size_type current_index = hash_value % hashtbl_size;
-    value_type* current_hash_bucket = &(hashtbl_values[current_index]);
+    size_type current_index = hash_value % hashtbl_size;  // 找到哪个位置
+    value_type* current_hash_bucket = &(hashtbl_values[current_index]); // 找到该位置的bucket
 
     const key_type insert_key = k;
 
@@ -620,13 +673,16 @@ int*>(tmp_it), unused, value ); if ( old_val == unused ) { it = tmp_it;
     while (false == insert_success) {
       // Situation %5: No slot: All slot in the hashtable is occupied by other key, both get and
       // insert fail. Return empty iterator
+      // hash表已经满了
       if (counter++ >= hashtbl_size) {
         return end();
       }
 
-      key_type& existing_key = current_hash_bucket->first;
-      volatile mapped_type& existing_value = current_hash_bucket->second;
-
+      key_type& existing_key = current_hash_bucket->first; // 这个才是table key
+      volatile mapped_type& existing_value = current_hash_bucket->second; // 这个才是table value
+      // 如果 existing_key == unused_key时，则当前哈希位置为空，所以existing_key由atomicCAS更新为insert_key。
+      // 如果 existing_key == insert_key时，这个位置已经被插入这个key了。
+      // 在任何一种情况下，都要执行existing_value和insert_value的atomic聚合，因为哈希表是用聚合操作的标识值初始化的，所以在existing_value仍具有其初始值时，执行该操作是安全的
       // Try and set the existing_key for the current hash bucket to insert_key
       const key_type old_key = atomicCAS(&existing_key, unused_key, insert_key);
 
@@ -641,9 +697,9 @@ int*>(tmp_it), unused, value ); if ( old_val == unused ) { it = tmp_it;
       // TODO: How to handle data types less than 32 bits?
 
       // Situation #1: Empty slot: this key never exist in the table, ready to insert.
-      if (keys_equal(unused_key, old_key)) {
+      if (keys_equal(unused_key, old_key)) { // 如果没有找到hash key
         // update_existing_value(existing_value, x, op);
-        existing_value = (mapped_type)(atomicAdd(value_counter, 1));
+        existing_value = (mapped_type)(atomicAdd(value_counter, 1)); // hash value 就递增
         break;
 
       }  // Situation #2+#3: Target slot: This slot is the slot for this key
@@ -659,6 +715,7 @@ int*>(tmp_it), unused, value ); if ( old_val == unused ) { it = tmp_it;
       // Situation 4: Wrong slot: This slot is occupied by other key, get fail, do nothing and
       // linear probing to next slot.
 
+      // 此位置已经被其他key占了，只能向后遍历
       current_index = (current_index + 1) % hashtbl_size;
       current_hash_bucket = &(hashtbl_values[current_index]);
     }
@@ -746,7 +803,7 @@ int*>(tmp_it), unused, value ); if ( old_val == unused ) { it = tmp_it;
 
   size_type m_hashtbl_size;
   size_type m_hashtbl_capacity;
-  value_type* m_hashtbl_values;
+  value_type* m_hashtbl_values; // 这个才是hash数据结构位置
 
   unsigned long long m_collisions;
 };

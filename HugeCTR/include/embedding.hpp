@@ -23,6 +23,7 @@
 #include "HugeCTR/include/embeddings/hybrid_embedding/utils.hpp"
 namespace HugeCTR {
 struct BufferBag;
+//DistributedSlotSparseEmbeddingHash类继承自 IEmbedding，Embedding 是所有嵌入层的接口。
 class IEmbedding {
  public:
   virtual ~IEmbedding() {}

@@ -41,7 +41,7 @@ void NvHashTable<KeyType, ValType>::get(const void *d_keys, void *d_vals, size_t
     ValType *_d_vals = reinterpret_cast<ValType*>(d_vals);
     return hashtable_.get(_d_keys, _d_vals, len, stream);
 }
-
+//可以看到，hash_key.get_ptr(), hash_value_index.get_ptr() 分别对应的是 _d_keys, _d_vals。
 template <typename KeyType, typename ValType>
 void NvHashTable<KeyType, ValType>::get_insert(const void *d_keys, void *d_vals, size_t len, cudaStream_t stream) {
     const KeyType *_d_keys = reinterpret_cast<const KeyType*>(d_keys);

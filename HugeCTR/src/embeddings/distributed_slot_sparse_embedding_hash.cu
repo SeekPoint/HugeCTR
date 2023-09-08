@@ -89,11 +89,18 @@ DistributedFilterKeyStorage<TypeHashKey>::DistributedFilterKeyStorage(
   }
   buf->reserve({rowoffset_count}, &rowoffset_select);
 }
+/*5.3.3 修改
+具体配置就是在 filter_keys_per_gpu 这里进行，就是利用 train_keys 进行配置其他成员变量，
+ 具体方法涉及到CUDA一些集合运算，有兴趣的读者可以自行研究。
 
+ 于是，在进行具体前向操作之前，会把EmbeddingData内部都进行配置，分别指向GPU之中的相应数据。
+ 005-004.jpg
+ */
 template <typename TypeHashKey, typename TypeEmbeddingComp>
 void DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::filter_keys_per_gpu(
     bool is_train, size_t id, size_t global_id, size_t global_num) {
   const SparseTensor<TypeHashKey> &all_gather_key = embedding_data_.get_input_keys(is_train)[id];
+  // 这里拿到了get_row_offsets_tensors
   Tensor2<TypeHashKey> rowoffset_tensor = embedding_data_.get_row_offsets_tensors(is_train)[id];
   Tensor2<TypeHashKey> value_tensor = embedding_data_.get_value_tensors(is_train)[id];
   std::shared_ptr<size_t> nnz_ptr = embedding_data_.get_nnz_array(is_train)[id];
@@ -137,6 +144,7 @@ void DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::filter_
           global_num);
     }
     {
+      // 这里会进行修改设置rowoffset_tensor
       size_t size_in_bytes =
           filter_keys_storage.temp_rowoffset_select_scan_storage.get_size_in_bytes();
       cub::DeviceScan::InclusiveSum(
@@ -274,7 +282,15 @@ DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
 
   return;
 }
-
+/*
+0x04 构建
+4.1 初始化
+我们接下来看看如何构建 DistributedSlotSparseEmbeddingHash，代码之中需要留意的是：
+      hash_tables_ 之中，每一个元素对应一个GPU。
+      train_keys 就是前面提到的 sparse_input，就是CSR format 相关的 row offset。
+具体就是分配内存，hash_tables_的大小是本地GPU数目，即每个GPU对应一个hash表，
+ 用一个gpu卡上的最大sparse key 的个数来初始化hash table，这样每个hash table能容纳元素的最大数值就被固定住了。
+  */
 template <typename TypeHashKey, typename TypeEmbeddingComp>
 DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
     DistributedSlotSparseEmbeddingHash(const SparseTensors<TypeHashKey> &train_keys,
@@ -288,11 +304,13 @@ DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
     // distribution is computed by (key%gpu_count). In order to not allocate the total size of
     // hash table on each GPU, meanwhile get a better performance by a unfull hash table, the
     // users need to set the param "load_factor"(load_factor<1).
+    // 得到一个gpu卡上最大sparse key个数
     max_vocabulary_size_per_gpu_ = embedding_data_.embedding_params_.max_vocabulary_size_per_gpu;
     max_vocabulary_size_ = max_vocabulary_size_per_gpu_ *
                            embedding_data_.get_resource_manager().get_global_gpu_count();
 
     MESSAGE_("max_vocabulary_size_per_gpu_=" + std::to_string(max_vocabulary_size_per_gpu_));
+    // 构建上下文
     CudaDeviceContext context;
     for (size_t id = 0; id < embedding_data_.get_resource_manager().get_local_gpu_count(); id++) {
       context.set_device(embedding_data_.get_local_gpu(id).get_device_id());
@@ -303,6 +321,7 @@ DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
                                          embedding_data_.embedding_params_, buf);
 
       {
+        // train_value_tensors_ 配置内存
         Tensor2<TypeHashKey> tensor;
         buf->reserve({embedding_data_.embedding_params_.get_batch_size(true),
                       embedding_data_.embedding_params_.max_feature_num},
@@ -310,6 +329,7 @@ DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
         embedding_data_.train_value_tensors_.push_back(tensor);
       }
       {
+        // evaluate_value_tensors_ 配置内存
         Tensor2<TypeHashKey> tensor;
         buf->reserve({embedding_data_.embedding_params_.get_batch_size(false),
                       embedding_data_.embedding_params_.max_feature_num},
@@ -317,6 +337,7 @@ DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
         embedding_data_.evaluate_value_tensors_.push_back(tensor);
       }
       {
+        // train_row_offsets_tensors_配置内存
         Tensor2<TypeHashKey> tensor;
         buf->reserve({embedding_data_.embedding_params_.get_batch_size(true) *
                           embedding_data_.embedding_params_.slot_num +
@@ -325,6 +346,7 @@ DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
         embedding_data_.train_row_offsets_tensors_.push_back(tensor);
       }
       {
+        // evaluate_row_offsets_tensors_ 配置内存
         Tensor2<TypeHashKey> tensor;
         buf->reserve({embedding_data_.embedding_params_.get_batch_size(false) *
                           embedding_data_.embedding_params_.slot_num +
@@ -335,7 +357,16 @@ DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
       { embedding_data_.train_nnz_array_.push_back(std::make_shared<size_t>(0)); }
       { embedding_data_.evaluate_nnz_array_.push_back(std::make_shared<size_t>(0)); }
       // new hash table value vectors
-      {
+      {// hash_table_value_tensors_ 配置内存
+        /*
+4.2 配置内存
+我们要看看几个关键变量的内存配置。
+4.2.1 hash_table_value_tensors_
+        hash_table_value_tensors_ 的内存是 max_vocabulary_size_per_gpu_ * embedding_vec_size。
+而 max_vocabulary_size_per_gpu_计算如下：
+        max_vocabulary_size_per_gpu_ = embedding_data_.embedding_params_.max_vocabulary_size_per_gpu;
+max_vocabulary_size_per_gpu 是在SparseEmbedding::SparseEmbedding中这里做了配置。
+*/
         Tensor2<float> tensor;
         buf->reserve(
             {max_vocabulary_size_per_gpu_, embedding_data_.embedding_params_.embedding_vec_size},
@@ -344,7 +375,9 @@ DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
       }
 
       // new hash table value_index that get() from HashTable
-      {
+      {//hash_value_index_tensors_配置内存，注意，这里配置的大小是 batch_size * max_feature_number
+        // max_feature_number 按照如下规则计算。
+        // DataReaderSparseParam中可以看： 所以，hash_value_index_tensors_ 大小就是 batch_size * nnz_per_slot。
         Tensor2<size_t> tensor;
         buf->reserve({1, embedding_data_.embedding_params_.get_universal_batch_size() *
                              embedding_data_.embedding_params_.max_feature_num},
@@ -353,7 +386,7 @@ DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
       }
 
       // new embedding features reduced by hash table values(results of forward)
-      {
+      {// // embedding_feature_tensors_ 配置内存
         Tensor2<TypeEmbeddingComp> tensor;
         buf->reserve({embedding_data_.embedding_params_.get_universal_batch_size() *
                           embedding_data_.embedding_params_.slot_num,
@@ -363,7 +396,7 @@ DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
       }
 
       // new wgrad used by backward
-      {
+      { // wgrad_tensors_ 配置内存
         Tensor2<TypeEmbeddingComp> tensor;
         buf->reserve({embedding_data_.embedding_params_.get_batch_size(true) *
                           embedding_data_.embedding_params_.slot_num,
@@ -373,7 +406,7 @@ DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
       }
 
       // new temp tensors used by update_params
-      {
+      {// row_offset_allreduce_tensors_ 配置内存
         Tensor2<TypeHashKey> tensor;
         buf->reserve({1, embedding_data_.embedding_params_.get_universal_batch_size() *
                                  embedding_data_.embedding_params_.slot_num +
@@ -381,7 +414,7 @@ DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
                      &tensor);
         row_offset_allreduce_tensors_.push_back(tensor);
       }
-      {
+      {// utest_forward_temp_tensors_ 配置内存
         Tensor2<TypeEmbeddingComp> tensor;
         buf->reserve({embedding_data_.embedding_params_.get_universal_batch_size() *
                           embedding_data_.embedding_params_.slot_num,
@@ -408,16 +441,20 @@ DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::
 #endif
     }
 
+    // hash_tables_的大小是本地GPU数目，即每个GPU对应一个hash表
     hash_tables_.resize(embedding_data_.get_resource_manager().get_local_gpu_count());
 #pragma omp parallel num_threads(embedding_data_.get_resource_manager().get_local_gpu_count())
     {
+      // 并行分配内存
       size_t id = omp_get_thread_num();
       CudaDeviceContext context(embedding_data_.get_local_gpu(id).get_device_id());
       // construct HashTable object: used to store hash table <key, value_index>
+      // 用一个gpu卡上的最大sparse key的个数来初始化hash table，这样每个hash table能容纳元素的最大数值就被固定住了。
       hash_tables_[id].reset(new NvHashTable(max_vocabulary_size_per_gpu_));
       embedding_data_.get_buffer(id)->allocate();
     }
 
+    // 遍历本地的GPU
     for (size_t id = 0; id < embedding_data_.get_resource_manager().get_local_gpu_count(); id++) {
       context.set_device(embedding_data_.get_local_gpu(id).get_device_id());
       embedding_optimizers_[id].initialize(embedding_data_.get_local_gpu(id));
@@ -1258,7 +1295,7 @@ void DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::reset_o
     embedding_optimizers_[id].reset(embedding_data_.get_local_gpu(id));
   }
 }
-
+//因为定义是模版类，所以具体拓展为如下：
 template class DistributedSlotSparseEmbeddingHash<unsigned int, float>;
 template class DistributedSlotSparseEmbeddingHash<long long, float>;
 template class DistributedSlotSparseEmbeddingHash<unsigned int, __half>;
