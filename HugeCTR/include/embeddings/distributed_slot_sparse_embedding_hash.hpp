@@ -383,7 +383,13 @@ ReduceScatter 操作执行与Reduce操作相同的操作，只是结果分散在
 
     return;
   }
-
+/*
+  0x04 backward
+  4.1 总体代码
+  由之前分析我们可以知道，反向传播时候，输入的梯度就是存储在embedding_data_.get_output_tensors(true)之中。
+  总体代码分为两部分，第一步是使用all-gather 操作来在每个GPU之上都收集到所有样本的全部梯度。
+  第二步是调用 functors_.backward进行计算。
+ */
   /**
    * The first stage of backward propagation of embedding layer,
    * which only computes the wgrad by the dgrad from the top layer.
@@ -399,6 +405,13 @@ ReduceScatter 操作执行与Reduce操作相同的操作，只是结果分散在
                          embedding_feature_tensors_, embedding_data_.get_resource_manager());
 
     // do backward
+    /*
+4.3 backward
+这部分完成如下功能：计算本地每个gpu上的梯度。此函数完成之后，wgrad_tensors_ 成员变量就是本GPU计算产生的新梯度。
+calculating wgrad，会选择如下两种之一：
+    sum: calling backward_sum_kernel() ；
+    mean: calling backward_mean_kernel()；
+     */
     functors_.backward(embedding_data_.embedding_params_.get_batch_size(true),
                        embedding_data_.embedding_params_.slot_num,
                        embedding_data_.embedding_params_.embedding_vec_size,

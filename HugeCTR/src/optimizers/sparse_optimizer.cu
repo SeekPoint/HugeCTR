@@ -164,9 +164,11 @@ __global__ void value_count_kernel_2(int nnz, const uint32_t *new_hash_value_fla
                                      uint32_t *hash_value_index_index, uint32_t *counter)
 
 {
+  // 遍历grid，但是需要小于该batch的非零key数目，其实就是 hash_table_value 的行数
   for (int gid = blockIdx.x * blockDim.x + threadIdx.x; gid < nnz; gid += blockDim.x * gridDim.x) {
     uint32_t flag = new_hash_value_flag[gid];
     if (flag == 1) {
+      // 设定
       hash_value_index_index[hash_value_flag_sumed[gid] - 1] = gid;
     }
   }
@@ -176,17 +178,66 @@ __global__ void value_count_kernel_2(int nnz, const uint32_t *new_hash_value_fla
   }
 }
 
+/*
+6.3 拓展sample id
+这里对应了第一步，在后续代码之中，每个key对应了一个sample ID。
+总体思路就是找到每个 key（sample ID） 和梯度矩阵，或者说和embedding_feature之中哪一行相对应，
+我们后续就直接以 embedding_feature来看，暂时不考虑梯度矩阵 。
+可以大致理解为把样本id扩展为key id的列表。
+        step1: expand sample IDs, calling sample_id_expand_kernel()
+就是调用 sample_id_expand_kernel 来拓展sample id。这里 sample_id 是成员变量 sample_id_tensors_的引用，这样就可以直接修改成员变量。
+        Tensor2<TypeHashKey> sample_id_tensors_; //< The temp memory to store the sample ids of hash table value in update_params().
+具体代码如下：
+        Tensor2<TypeHashKey> &sample_id = sample_id_tensors_;
+
+        // step1: expand sample IDs
+        block_size = 64;
+        grid_size = (batch_size * slot_num - 1) / block_size + 1;
+        sample_id_expand_kernel<<<grid_size, block_size, 0, stream>>>(
+            batch_size, slot_num, row_offset.get_ptr(), sample_id.get_ptr());
+通过前面分析我们知道，embedding vector个数是：batch_size x slot_num，也就是说，CSR 有几行，这里就有几个向量。
+ 所以这里就直接读取CSR行信息即可。
+ 即， sample_id_expand_kernel 会把 sample_id_tensors_ 设置为 CSR row offset（expand sample id by row_offset），就是找到 CSR row offset 之中的index。
+
+CSR row_offset = [0,4,7,9,10]，样本之中key的数值是40,50,10,20,30,50,10,30,20,10，
+那么 40,50,10,20对应了 0，30,50,10对应了1，30,20对应了 2，10对应了3。
+因此，sample_id 数值是 [0,0,0,0,1,1,1,2,2,3]，就是记录了该 batch 在 embedding_feature_tensors_ 之中的 row index。
+
+sample_id_expand_kernel 代码如下，这里几个重点：
+      gid 是grid ID，表示本线程对应了embedding_feature_tensors_ 哪个元素。
+
+      blockIdx 表示一个样本。
+
+      (batch_size * slot_num) 代表 本batch在 嵌入层输出 train_output_tensors_ 之中对应了多少行，
+      或者说是在 embedding_feature_tensors_ 之中占据了多少行，其实 embedding_feature_tensors_ 也就这么大。
+
+      sample_id[offset + i] = gid; 目的就是记录该样本某key在 embedding_feature_tensors_ 之中的 row index（对应哪一行）。
+      embedding_feature_tensors_ 这个稠密向量是由 hash_table_value 之中"CSR 本行的元素数目"个稠密向量做pooling得到的结果。
+
+我们把目前涉及的变量整理如下，这里假定从CSR数值到hash_value_index_tensors_ 行的映射是取十位数，比如50就映射到第5行。
+
+名称	数值	意义
+CSR row offset	0,4,7,9,10	两个样本，两个slot，所以分成四行
+CSR value	40,50,10,20,30,50,10,30,20,10	样本内容
+hash_value_index_tensors_	4,5,1,2,3,5,1,3,2,1	低维嵌入表的index，样本每个key对应一个，比如50对应了 hash_table_value 第5行
+hash_table_value	5 x 8 的矩阵	低维嵌入表，假定稠密向量长度是8，因为一共只有5个不同数字，所以只有5行
+embedding_feature_tensors_	4 x 8 的矩阵	嵌入层输出的稠密向量。形状是(batch_size * slot_num) * embedding_vec_len
+sample_id	0,0,0,0,1,1,1,2,2,3	每个样本的每个key 对应了embedding_feature_tensors_ 中的 row index。比如CSR第一行是40,50,10,20，它们都为 embedding_feature_tensors_ 的第一行做出了贡献。
+ * */
 // expand sample id by row_offset
 template <typename TypeKey>
 __global__ void sample_id_expand_kernel(int batch_size, int slot_num, const TypeKey *row_offset,
                                         TypeKey *sample_id) {
+  //// 本线程对应的grid id，其实对应的就是global thread id
   int gid = blockIdx.x * blockDim.x + threadIdx.x;
 
-  if (gid < (batch_size * slot_num)) {
-    TypeKey offset = row_offset[gid];
-    int value_num = row_offset[gid + 1] - offset;
+  if (gid < (batch_size * slot_num)) {  // 假如batch_size=2，slot_num=2，取值为 gid < 4
+     // 并不是每个GPU线程都会走到这里，对应我们的假设，则只会取出gid = 0~3 这样的线程才会进行下面配置操作
+    // 比如，假定gid取值范围8，那么只有gid=0,gid=1,gid=2,gid=3 这几个线程会进入if，执行操作，其余线程不会进入，比如grid=4就不会进入
+    TypeKey offset = row_offset[gid];  // 拿到对应的个数，比如 row_offset[0]，row_offset[1]，row_offset[2]的数值
+    int value_num = row_offset[gid + 1] - offset;  // 拿到CSR 本行的元素数目
     for (int i = 0; i < value_num; i++) {
-      sample_id[offset + i] = gid;
+      sample_id[offset + i] = gid;  // 记录该样本某key在 embedding_feature_tensors_ 之中的 row index
     }
   }
 }
@@ -217,13 +268,22 @@ __device__ __forceinline__ float accumulate_gradients(int embedding_vec_size,
                                                       const uint32_t *hash_value_index_count_offset,
                                                       const TypeEmbeddingComp *wgrad, float scaler,
                                                       uint32_t offset, int bid, int tid) {
+  // 哪一行更新几次
+  // 如果bid=0,则sum_num = hash_value_index_count_offset[1] - hash_value_index_count_offset[0] = 3 - 0 = 3个。
+  // bid对应了key，比如 40,50,10,20,30,50,10,30,20,10 这些key，其key就是10～50这个5个。
+  // 所以 bid = 0 就是要更新10对应的低维矩阵稠密向量，就是hash_table_value[0]这一行，有三个1，应该更新3次
   uint32_t sample_num = hash_value_index_count_offset[bid + 1] - hash_value_index_count_offset[bid];
 
+  // 计算梯度
   float gi = 0.0f;
-  for (int i = 0; i < sample_num; i++) {
-    int sample_index = sample_id[offset + i];
+
+  // sample_id_sort [0,1,3,0,2,1,2,0,0,1] ---- 第几行，恰恰和 wgrad 对上了
+  for (int i = 0; i < sample_num; i++) {   // offset 就是0, 3, 5, 7, 8，比如对于第1行，需要更新3次
+    // sample_id 是[0,1,3,0,2,1,2,0,0,1]，对应了低维矩阵第1,2,4,...,行，就是3个10分别在输出稠密向量的哪一行
+    // 更新这几次，就是一个累积，这个累积用哪些梯度来累积。
+    int sample_index = sample_id[offset + i];   // 找到本样本梯度
     gi += TypeConvertFunc<float, TypeEmbeddingComp>::convert(
-        wgrad[sample_index * embedding_vec_size + tid]);
+        wgrad[sample_index * embedding_vec_size + tid]);  // 本线程梯度，并且累积
   }
   return gi / scaler;
 }
@@ -410,24 +470,32 @@ __global__ void opt_adagrad_kernel(uint32_t hash_value_index_count_num, int embe
                                    const uint32_t *hash_value_index_count_offset,
                                    const TypeEmbeddingComp *wgrad, float *hash_table_value,
                                    float scaler) {
-  int bid = blockIdx.x;
-  int tid = threadIdx.x;
+  int bid = blockIdx.x;  // 一个block对应一个样本之中的一个key，比如例子之中的30
+  int tid = threadIdx.x; // 本线程
 
   if (tid < embedding_vec_size && bid < hash_value_index_count_num) {
-    uint32_t offset = hash_value_index_count_offset[bid];
+    // 找到本线程样本在 hash_value_index_sort 的偏移
+    uint32_t offset = hash_value_index_count_offset[bid];  // [0, 3, 5, 7, 8, 0, 0, 0, 0, 0]
 
+    // 累积得出梯度
     float gi = accumulate_gradients(embedding_vec_size, sample_id, hash_value_index_count_offset,
                                     wgrad, scaler, offset, bid, tid);
 
+    // 找到本样本在低维矩阵之中的row index
     size_t row_index = hash_value_index_sort[offset];
+
+    // 注意，hash_table_value 是元素级别，比如稠密向量长度是8，那么在 hash_table_value 里面就有8个元素
+    // feature_index 就是得到本线程对应的 embedding vector 之中的哪个元素
     size_t feature_index = row_index * embedding_vec_size + tid;
+
+    //accum_ptr 来自优化器
     float accum =
         TypeConvertFunc<float, TypeEmbeddingComp>::convert(accum_ptr[feature_index]) + gi * gi;
 
     accum_ptr[feature_index] = TypeConvertFunc<TypeEmbeddingComp, float>::convert(accum);
     float weight_diff = -lr * gi / (sqrtf(accum) + adagrad.epsilon);
 
-    hash_table_value[feature_index] += weight_diff;  // 更新权重
+    hash_table_value[feature_index] += weight_diff;  // 更新权重 // 更新梯度
   }
 }
 
@@ -599,6 +667,10 @@ __global__ void opt_sgd_atomic_kernel(int nnz, int embedding_vec_size, float lr_
 }  // namespace
 //6.2 更新
 //    其内部主要是通过 opt_adagrad_kernel 进行更新。
+//6.2.2 update代码
+//    我们摘录 EmbeddingOptimizer::update 的代码如下，
+//        这里只是选择了Optimizer_t::AdaGrad相关部分，其通过 opt_adagrad_kernel 进行更新。
+//        这里可以清楚看到注释中的各个步骤，我们接下来就会逐一分析。
 template <typename TypeHashKey, typename TypeEmbeddingComp>
 void EmbeddingOptimizer<TypeHashKey, TypeEmbeddingComp>::update(
     size_t batch_size, size_t slot_num, size_t embedding_vec_size,
@@ -640,7 +712,25 @@ void EmbeddingOptimizer<TypeHashKey, TypeEmbeddingComp>::update(
           nnz, embedding_vec_size, lr_scale, hash_value_index.get_ptr(), sample_id.get_ptr(),
           wgrad.get_ptr(), hash_table_value.get_ptr());
     } else {
-      // step3: sort by hash_value_index
+/*
+    6.5 排序
+      这部分对应第三步：
+      step3: sort by value_index (will call cub::DeviceRadixSort::SortPairs in cub lib)
+      现在得到了：sample_id 数值是 [0,0,0,0,1,1,1,2,2,3]，就是记录了该 batch 在 embedding_feature_tensors_ 之中的 row index。
+      就是把 sample_id 按照 hash_value_index 来排序，最后排序结果放入 hash_value_index_sort 和 sample_id_sort。在我们例子之中，得到结果如下：hash_value_index_sort 是 [1,1,1,2,2,3,3,4,5,5]。sample_id_sort 是 [0,1,3,0,2,1,2,0,0,1 ]。
+      我们还是用表格记录：
+名称	数值	意义
+CSR row offset	0,4,7,9,10	两个样本，两个slot，所以分成四行
+CSR value	40,50,10,20,30,50,10,30,20,10	样本内容
+hash_value_index_tensors_	4,5,1,2,3,5,1,3,2,1	低维嵌入表的index，样本每个key对应一个，比如50对应了 hash_table_value 第5行
+hash_table_value	5 x 8 的矩阵	低维嵌入表，假定稠密向量长度是8，因为一共只有5个不同数字，所以只有5行
+embedding_feature_tensors_	4 x 8 的矩阵	嵌入层输出的稠密向量。形状是(batch_size * slot_num) * embedding_vec_len
+sample_id	0,0,0,0,1,1,1,2,2,3	每个样本的每个key 对应了embedding_feature_tensors_ 中的 row index。比如CSR第一行是40,50,10,20，它们都为 embedding_feature_tensors_ 的第一行做出了贡献。
+sample_id_sort	[0,1,3,0,2,1,2,0,0,1 ]	和 hash_value_index_sort 对应，就是 hash_value_index_sort 前三个 1 分别对应了embedding_feature 的第1行，第2行，第4行（从0开始的序列）
+hash_value_index_sort	[1,1,1,2,2,3,3,4,5,5]	排序之后的结果，举例来说，111 意思是本batch之中，一共有3个key对最终embedding_feature第一行做出了贡献
+具体代码如下：
+ * */
+      // step3: sort by hash_value_index   具体使用方法如下：007-006.png
       int end_bit = static_cast<int>(log2(static_cast<float>(max_vocabulary_size_per_gpu))) + 1;
       size_t temp_storage_sort_size = temp_storage_sort.get_size_in_bytes();
       CK_CUDA_THROW_(cub::DeviceRadixSort::SortPairs(
@@ -648,6 +738,30 @@ void EmbeddingOptimizer<TypeHashKey, TypeEmbeddingComp>::update(
           hash_value_index_sort.get_ptr(), sample_id.get_ptr(), sample_id_sort.get_ptr(), nnz, 0,
           end_bit, stream, false));
 
+      /*
+6.6 计算value_index对应的数目
+现在知道了 hash_value_index_sort 是 [1,1,1,2,2,3,3,4,5,5]，sample_id_sort 是 [0,1,3,0,2,1,2,0,0,1 ]。
+      hash_value_index_sort 是hash_value_index排序之后的结果，举例来说，111 意思是本batch之中，一共有3个key对最终embedding_feature第一行做出了贡献
+      sample_id_sort 和 hash_value_index_sort 对应，就是 hash_value_index_sort 前三个 1 分别对应了embedding_feature 的第1行，第2行，第4行（从0开始的序列）
+接下来需要知道 embedding_feature_tensors_ 每行的来源是多少个 hash_table_value 行，
+比如第0行有4个，第1行有3个......。embedding_feature_tensors_ 之中的一个行 是被同一个slot的多个 hash_table_value 行的稠密向量做pooling完成的。
+
+就是对 hash_value_index_sort 进行处理，这里是 embedding 表 hash_table_value 的 row index。
+
+我们接下来一点点分析。
+6.6.1 value_count_kernel_1
+value_count_kernel_1目的是找到新的group，就是新的 row index。
+目的是为了计算每个row index对应的sample id 个数。就是找到哪些点是新行起始点。我们拓展表格如下。
+
+名称	数值	意义
+CSR row offset	0,4,7,9,10	两个样本，两个slot，所以分成四行
+CSR value	40,50,10,20,30,50,10,30,20,10	样本内容
+hash_value_index_tensors_	4,5,1,2,3,5,1,3,2,1	低维嵌入表的index，样本每个key对应一个，比如50对应了 hash_table_value 第5行
+sample_id	0,0,0,0,1,1,1,2,2,3	每个样本的每个key 对应了embedding_feature_tensors_ 中的 row index。比如CSR第一行是40,50,10,20，它们都为 embedding_feature_tensors_ 的第一行做出了贡献。
+sample_id_sort	[0,1,3,0,2,1,2,0,0,1 ]	和 hash_value_index_sort 对应，就是 hash_value_index_sort 前三个 1 分别对应了 embedding_feature 的第1行，第2行，第4行（从0开始的序列）
+hash_value_index_sort	[1,1,1,2,2,3,3,4,5,5]	排序之后的结果，举例来说，1,1,1 意思是本batch之中，一共有3个key对最终embedding_feature第一行做出了贡献
+new_hash_value_flag	[1,0,0,1,0,1,0,1,1,0]	为了计算每个row index对应的sample id 个数。就是找到哪些点是新行起始点
+       * */
       // step4: count the number for each unduplicated hash_value_index
       CK_CUDA_THROW_(
           cudaMemsetAsync(hash_value_index_count_counter.get_ptr(), 0, sizeof(uint32_t), stream));
@@ -656,15 +770,85 @@ void EmbeddingOptimizer<TypeHashKey, TypeEmbeddingComp>::update(
       block_size = 256;
       grid_size = min(max_grid_size, (nnz - 1) / block_size + 1);
 
+      //// 目的是找到新的group，就是新的 row index。目的是为了计算每个row index对应的sample id个数
       value_count_kernel_1<<<grid_size, block_size, 0, stream>>>(
           nnz, hash_value_index_sort.get_ptr(), new_hash_value_flag.get_ptr());
 
+      /*
+6.6.2 prefix_sum
+对 new_hash_value_flag 排序，目的是得到每个group（row index）内部包含多少元素，放入 hash_value_flag_sumed 之中。
+这里使用了 cub::DeviceScan::InclusiveSum，如果想深入研究，可以参见 https://nvlabs.github.io/cub/structcub_1_1_device_scan.html 。
+
+以下是函数说明  007-007  以下是使用方法 007-008
+我们拓展表格如下。
+名称	数值	意义
+CSR row offset	0,4,7,9,10	两个样本，两个slot，所以分成四行
+CSR value	40,50,10,20,30,50,10,30,20,10	样本内容
+hash_value_index_tensors_	[4,5,1,2,3,5,1,3,2,1]	低维嵌入表的index，样本每个key对应一个，比如50对应了 hash_table_value 第5行
+sample_id	[0,0,0,0,1,1,1,2,2,3]	每个样本的每个key 对应了embedding_feature_tensors_ 中的 row index。比如CSR第一行是40,50,10,20，它们都为 embedding_feature_tensors_ 的第一行做出了贡献。
+sample_id_sort	[0,1,3,0,2,1,2,0,0,1]	和 hash_value_index_sort 对应，就是 hash_value_index_sort 前三个 1 分别对应了 embedding_feature 的第1行，第2行，第4行（从0开始的序列）
+hash_value_index_sort	[1,1,1,2,2,3,3,4,5,5]	排序之后的结果，举例来说，1,1,1 意思是本batch之中，一共有3个key对最终embedding_feature第一行做出了贡献
+new_hash_value_flag	[1,0,0,1,0,1,0,1,1,0]	为了计算每个row index对应的sample id 个数。就是找到哪些点是新行起始点
+hash_value_flag_sumed	[1,1,1,2,2,3,3,4,5,5]	对 new_hash_value_flag 合并，目的是得到每个group（row index）内部包含多少元素。
+hash_table_value	5 x 8 的矩阵	低维嵌入表，假定稠密向量长度是8，因为一共只有5个不同数字，所以只有5行
+       */
       // prefix_sum
       size_t temp_storage_scan_size = temp_storage_scan.get_size_in_bytes();
       CK_CUDA_THROW_(cub::DeviceScan::InclusiveSum(
           temp_storage_scan.get_ptr(), temp_storage_scan_size, new_hash_value_flag.get_ptr(),
           hash_value_flag_sumed.get_ptr(), nnz, stream));
 
+      /*
+6.6.3 value_count_kernel_2
+这个代码作用就是得到最终每行元素个数。
+
+hash_hash_value_index_count_num 是index总数，就是一共真实有几行，其对应了nnz。
+      * @param nnz non-zero feature number per batch
+
+现在知道了 hash_value_index_sort 是 [1,1,1,2,2,3,3,4,5,5]，sample_id_sort 是 [0,1,3,0,2,1,2,0,0,1 ]，
+new_hash_value_flag 是 [1,0,0,1,0,1,0,1,1,0]，里面放置了本行是不是新行。
+hash_value_flag_sumed 是[ 1,1,1,2,2,3,3,4,5,5 ]。
+
+我们分析一下代码。总体思想是：在 hash_value_index_index（对应传进来的参数是 hash_value_index_count_offset）设定 "按照数目计算的，
+对应的 embedding 表 index（就是对应的 embedding 表行号）"。
+因为embedding_feature 最多只有5行（nnz个数），所以这里取前五个即可。
+
+比如，每个block要处理低维稠密矩阵一行。如 bid = 1，它希望更新低维稠密矩阵第2行，但是想知道更新几次。
+所以先从 hash_value_index_count_offset[1] 得到了数值 3，然后找到 hash_value_index_sort[3] 来进行处理。
+
+具体是：遍历grid，但是需要小于nnz（该batch的非零key数目），其实就是 hash_table_value 的行数。
+比如说nnz这里等于10，gid 取值就是0～9。grid为0，3，5，7，8 时候new_hash_value_flag[gid] 为 1。
+hash_value_flag_sumed[gid]分别为：1,2,3,4,5。
+所以 hash_value_index_count_offset 是 [0, 3, 5, 7, 8, 0, 0, 0, 0, 0]，
+这些是 hash_value_index_sort 之中的offset。
+
+到目前为止，所有变量如下：
+名称	数值	意义
+CSR row offset	0,4,7,9,10	两个样本，两个slot，所以分成四行
+CSR value	40,50,10,20,30,50,10,30,20,10	样本内容
+hash_table_value	5 x 8 的矩阵	低维嵌入表，假定稠密向量长度是8，因为一共只有5个不同数字（nnz），所以只有5行
+embedding_feature_tensors_	4 x 8 的矩阵	嵌入层输出的稠密向量。形状是(batch_size * slot_num) * embedding_vec_len
+hash_value_index_tensors_	[4,5,1,2,3,5,1,3,2,1]	低维嵌入表的index，样本每个key对应一个，比如50对应了 hash_table_value 第5行
+sample_id	[0,0,0,0,1,1,1,2,2,3]	每个样本的每个key 对应了embedding_feature_tensors_ 中的 row index。比如CSR第一行是40,50,10,20，它们都为 embedding_feature_tensors_ 的第一行做出了贡献。
+sample_id_sort	[0,1,3,0,2,1,2,0,0,1]	和 hash_value_index_sort 对应，就是 hash_value_index_sort 前三个 1 分别对应了 embedding_feature 的第1行，第2行，第4行（从0开始的序列）
+hash_value_index_sort	[1,1,1,2,2,3,3,4,5,5]	排序之后的结果，举例来说，1,1,1 意思是本batch之中，一共有3个key对最终embedding_feature第一行做出了贡献
+new_hash_value_flag	[1,0,0,1,0,1,0,1,1,0]	为了计算每个row index对应的sample id 个数。就是找到哪些点是新行起始点
+hash_value_flag_sumed	[1,1,1,2,2,3,3,4,5,5]	对 new_hash_value_flag 合并，目的是得到每个group（row index）内部包含多少元素。
+hash_value_index_count_offset	[0, 3, 5, 7, 8, 0, 0, 0, 0, 0]	每个block要处理低维稠密矩阵一行。如 bid = 1，它希望更新低维稠密矩阵第2行，但想知道更新几次。所以先从 hash_value_index_count_offset[1] 得到了数值 3，然后找到 hash_value_index_sort[3]。因为embedding_feature 最多只有5行（nnz个数），所以这里取前五个即可
+
+最终思路如下:
+      每个block要处理低维稠密矩阵一行。假如bid=0 想更新低维矩阵第一行，就是要更新10对应的低维矩阵稠密向量。
+      bid对应了key（的梯度），比如 40,50,10,20,30,50,10,30,20,10 这些，其key就是10～50这个5个。
+
+      hash_value_index_count_offset ：本bid对于低维稠密矩阵该行要更新几次。
+       sum_num = hash_value_index_count_offset[1] - hash_value_index_count_offset[0] = 3 - 0 = 3个，所以更新3次。
+
+      hash_value_index_sort ：在 [1,1,1,2,2,3,3,4,5,5] 这里找到 1,1,1，
+       表示本batch之中一共有3个key对最终embedding_feature第一行做出了贡献。
+
+      所以 bid = 0 ，就是hash_table_value[0]这一行 有三个1，应该更新3次。
+      sample_id_sort ：更新就是累积，就是这3次更新分别去输入梯度哪一行去找？3个10分别在梯度的0,1,3这几行。
+* */
       value_count_kernel_2<<<grid_size, block_size, 0, stream>>>(
           nnz, new_hash_value_flag.get_ptr(), hash_value_flag_sumed.get_ptr(),
           hash_value_index_count_offset.get_ptr(), hash_value_index_count_counter.get_ptr());
@@ -702,6 +886,21 @@ void EmbeddingOptimizer<TypeHashKey, TypeEmbeddingComp>::update(
                   hash_table_value.get_ptr());
               break;
             }
+/*
+             6.7 更新权重
+             这是最后一步，对应了如下：
+             step5: use optimizer method to compute deltaw and update the parameters
+             调用代码如下：
+              注意，这里传递的是 sample_id_sort [0,1,3,0,2,1,2,0,0,1]，
+              对应的 hash_value_index_sort 是 [1,1,1,2,2,3,3,4,5,5]，
+              hash_value_index_count_offset 是 [0, 3, 5, 7, 8, 0, 0, 0, 0, 0]。
+
+              很明显可以看到，其就是使用权重更新 hash_table_value
+
+最终具体如下图：
+ 007-009
+至此，我们关于 DistributedSlotSparseEmbeddingHash 分析全部完成，下一篇介绍 LocalSlotSparseEmbeddingHash。
+ * */
             case Optimizer_t::AdaGrad: {
               opt_adagrad_kernel<<<grid_size, block_size, 0, stream>>>(
                   hash_hash_value_index_count_num, embedding_vec_size, opt_params.lr,

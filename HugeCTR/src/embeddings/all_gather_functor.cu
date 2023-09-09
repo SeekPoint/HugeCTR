@@ -23,6 +23,22 @@
 #include "HugeCTR/include/utils.hpp"
 
 namespace HugeCTR {
+
+/*
+4.2 AllGather
+反向传播的第一步是使用 all-gather 操作来在每个 GPU 之上都收集到的所有样本的全部梯度，这样后续可以进行计算并且更新每个 GPU 之上的参数。
+4.2.1 原理
+首先我们看 AllGather 原理。在执行 AllGather 操作时，K个处理器之中，每个处理器都会将来自每个处理器的N个值聚集成一个维度为K*N的输出。
+输出是按rank索引排序的。AllGather操作会受到不同rank或设备映射的影响，因为rank决定了数据布局。
+注意：执行ReduceScatter + AllGather，就等同于AllReduce操作。
+007-002-A.png
+4.2.2 代码
+调用代码如下，可以看到其会把梯度从反向传播的输入 embedding_data_.get_output_tensors(true) 拷贝到 embedding_feature_tensors_。
+因此，embedding_feature_tensors_ 将会拥有所有的梯度。
+    functors_.all_gather(send_count, embedding_data_.get_output_tensors(true),
+                         embedding_feature_tensors_, embedding_data_.get_resource_manager());
+算子如下
+ */
 /**
  * collection communication: all_gather.
  * @param send_count the count of elements will be sent.

@@ -60,7 +60,7 @@ template void expand_input_grad(const size_t global_batch_size, const size_t slo
                       const size_t embedding_vec_size, const int64_t *replica_row_offset,
                       const float *wgrad, float *replica_input_grad, 
                       cudaStream_t stream);
-
+//我们以backward_sum 为例，这里采用了GPU多线程更新以加快速度
 template <typename TypeEmbeddingComp>
 void backward_sum(size_t batch_size, size_t slot_num, size_t embedding_vec_size,
                   const TypeEmbeddingComp *top_grad, TypeEmbeddingComp *wgrad,

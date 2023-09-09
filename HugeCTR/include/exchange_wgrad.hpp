@@ -25,7 +25,8 @@ using BuffPtr = std::shared_ptr<BufferBlock2<T>>;
 
 template <typename T>
 using BuffPtrs = std::vector<BuffPtr<T>>;
-
+//5.1 定义
+//    从定义可以看到，ExchangeWgrad 的功能就是简单封装底层资源
 class ExchangeWgrad {
  public:
   virtual void allocate() = 0;

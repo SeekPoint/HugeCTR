@@ -502,7 +502,13 @@ bool Session::train() {
         local_gpu->wait_on_compute_event(local_gpu->get_comp_overlap_stream());
         networks_[0]->update_params();
       }
-
+      /*
+      2.2 代码
+           在 session::train() 之中有如下代码，这些就对应了总体思路。
+               backward 进行反向传播计算。
+               exchange_wgrad 进行交换梯度。
+               update_params 来更新参数。
+       */
       // Embedding backward
       for (const auto& one_embedding : embeddings_) {
         // 嵌入层反向操作
@@ -510,6 +516,8 @@ bool Session::train() {
       }
 
       // Exchange wgrad and update params
+//      0x05 ExchangeWgrad
+//          session.train 接下来会交换梯度和更新网络参数。
       if (networks_.size() > 1) {
 #pragma omp parallel num_threads(networks_.size())
         {
@@ -522,6 +530,10 @@ bool Session::train() {
         exchange_wgrad(0);
         networks_[0]->update_params();
       }
+      //      0x06 更新参数
+      //          Session.train 接下来会让嵌入层来更新参数，具体是使用优化器进行更新。这部分是反向操作的难点。
+      //          现在的问题是，wgrad_tensors_ 之中已经是梯度了，需要根据这个来更新嵌入层权重，就是 hash_table_value。
+      //          但是如何更新呢？比如怎样利用GPU多线程更新？是否需要更新 hash_value_index_index？我们接下来一步一步分析。
       for (const auto& one_embedding : embeddings_) {
         // 嵌入层更新sparse参数
         one_embedding->update_params();

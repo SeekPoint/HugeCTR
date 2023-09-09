@@ -2,7 +2,6 @@ https://www.cnblogs.com/rossiXYZ/p/15897877.html
 [源码解析] NVIDIA HugeCTR，GPU版本参数服务器 --(1)  2022-02-15 19:29  罗西的思考 ===》(tag: v3.4) 以前！
 因此 HugeCTR 架构 2.1 版扩展为支持 Wide & Deep、DCN 和 DeepFM 等模型==》至少是2.1后的版本
 主要是架构介绍, 很多重要的图，但是没有代码降解，所以这里记录！
-[源码解析] NVIDIA HugeCTR，GPU版本参数服务器 --(1)
 0x00 摘要
 0x01 背景
 1.1 推荐系统中的点击率估计
@@ -282,12 +281,35 @@ https://www.cnblogs.com/futurehau/p/6181008.html
 https://www.cnblogs.com/rossiXYZ/p/15902100.html
 
 
+=============================================================================================================================================================
+=============================================================================================================================================================
+=============================================================================================================================================================
+
+
 [源码解析] NVIDIA HugeCTR，GPU版本参数服务器--- (2)
 solver_config = hugectr.solver_parser_helper(batchsize = 16384 == 只有v2.3, v3.0， v3.0.1
 std::vector<std::shared_ptr<IEmbedding>> embeddings_ 最先v3.0
  Session(const SolverParser& solver_config, const std::string& config_file)  最先v3.1 ====后续搜索显示都有，基本确定！！！
  这里CSR是嵌入层依赖的数据格式，我们下文会分析。
  001-002.png
+0xFF 参考
+https://developer.nvidia.com/blog/introducing-merlin-hugectr-training-framework-dedicated-to-recommender-systems/
+
+https://developer.nvidia.com/blog/announcing-nvidia-merlin-application-framework-for-deep-recommender-systems/
+
+https://developer.nvidia.com/blog/accelerating-recommender-systems-training-with-nvidia-merlin-open-beta/
+
+HugeCTR源码阅读
+
+embedding层如何反向传播
+
+https://web.eecs.umich.edu/~justincj/teaching/eecs442/notes/linear-backprop.html
+
+HugeCTR_Webinar
+
+ =============================================================================================================================================================
+ =============================================================================================================================================================
+ =============================================================================================================================================================
 
 https://www.cnblogs.com/rossiXYZ/p/15905658.html
 [源码解析] NVIDIA HugeCTR，GPU版本参数服务器---(3)
@@ -311,6 +333,24 @@ https://www.cnblogs.com/rossiXYZ/p/15905658.html
 比如下面有两个张量，Tensor 1 和 Tensor 2。
 002-007.jpg
 
+0xFF 参考
+https://developer.nvidia.com/blog/introducing-merlin-hugectr-training-framework-dedicated-to-recommender-systems/
+
+https://developer.nvidia.com/blog/announcing-nvidia-merlin-application-framework-for-deep-recommender-systems/
+
+https://developer.nvidia.com/blog/accelerating-recommender-systems-training-with-nvidia-merlin-open-beta/
+
+HugeCTR源码阅读
+
+embedding层如何反向传播
+
+https://web.eecs.umich.edu/~justincj/teaching/eecs442/notes/linear-backprop.html
+
+稀疏矩阵存储格式总结+存储效率对比:COO,CSR,DIA,ELL,HYB
+
+ =============================================================================================================================================================
+ =============================================================================================================================================================
+ =============================================================================================================================================================
 
 https://www.cnblogs.com/rossiXYZ/p/15916979.html
 [源码解析] NVIDIA HugeCTR，GPU版本参数服务器--- (4)
@@ -333,10 +373,30 @@ https://www.cnblogs.com/rossiXYZ/p/15916979.html
 这里简化了多GPU，多worker 的情况。
 003-008.jpg
 
+0xFF 参考
+https://developer.nvidia.com/blog/introducing-merlin-hugectr-training-framework-dedicated-to-recommender-systems/
+
+https://developer.nvidia.com/blog/announcing-nvidia-merlin-application-framework-for-deep-recommender-systems/
+
+https://developer.nvidia.com/blog/accelerating-recommender-systems-training-with-nvidia-merlin-open-beta/
+
+HugeCTR源码阅读
+
+embedding层如何反向传播
+
+https://web.eecs.umich.edu/~justincj/teaching/eecs442/notes/linear-backprop.html
+
+稀疏矩阵存储格式总结+存储效率对比:COO,CSR,DIA,ELL,HYB
+
+ =============================================================================================================================================================
+ =============================================================================================================================================================
+ =============================================================================================================================================================
+
+
+
 https://www.cnblogs.com/rossiXYZ/p/15924047.html
 [源码解析] NVIDIA HugeCTR，GPU版本参数服务器--- (5) 嵌入式hash表
-目录
-[源码解析] NVIDIA HugeCTR，GPU版本参数服务器--- (5) 嵌入式hash表
+
 
 在这篇文章中，我们介绍了 HugeCTR，这是一个面向行业的推荐系统训练框架，针对具有模型并行嵌入和数据并行密集网络的大规模 CTR 模型进行了优化。
 其中借鉴了HugeCTR源码阅读 这篇大作，特此感谢。
@@ -682,11 +742,121 @@ sparse_combiner: A string specifying how to reduce if a categorical column
 004-017.jpg
 那么，嵌入层是如何利用到 output_ 中的sparse特征的呢？我们需要一步一步来看。
 
+0xFF 参考
+Using Neural Networks for Your Recommender System
+
+Accelerating Embedding with the HugeCTR TensorFlow Embedding Plugin
+
+https://developer.nvidia.com/blog/introducing-merlin-hugectr-training-framework-dedicated-to-recommender-systems/
+
+https://developer.nvidia.com/blog/announcing-nvidia-merlin-application-framework-for-deep-recommender-systems/
+
+https://developer.nvidia.com/blog/accelerating-recommender-systems-training-with-nvidia-merlin-open-beta/
+
+NVIDIA Merlin HugeCTR 简介：专用于推荐系统的培训框架
+
+HugeCTR源码阅读
+
+embedding层如何反向传播
+
+https://web.eecs.umich.edu/~justincj/teaching/eecs442/notes/linear-backprop.html
+
+稀疏矩阵存储格式总结+存储效率对比:COO,CSR,DIA,ELL,HYB
+
+无中生有：论推荐算法中的Embedding思想
+
+tf.nn.embedding_lookup函数原理
+
+求通俗讲解下tensorflow的embedding_lookup接口的意思？
+
+【技术干货】聊聊在大厂推荐场景中embedding都是怎么做的
+
+ctr预估算法对于序列特征embedding可否做拼接，输入MLP?与pooling
+
+推荐系统中的深度匹配模型
+
+土法炮制：Embedding 层是如何实现的？
+
+不等距双杆模型_搜索中的深度匹配模型（下）
+
+深度特征 快牛策略关于高低层特征融合
+
+[深度学习] DeepFM 介绍与Pytorch代码解释
+
+deepFM in pytorch
+
+推荐算法之7——DeepFM模型
+
+DeepFM 参数理解（二）
+
+推荐系统遇上深度学习(三)--DeepFM模型理论和实践
+
+[深度学习] DeepFM 介绍与Pytorch代码解释
+
+https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/operations.html
+
+带你认识大模型训练关键算法：分布式训练Allreduce算法
+
+FLEN: Leveraging Field for Scalable CTR Prediction
+
+ =============================================================================================================================================================
+ =============================================================================================================================================================
+ =============================================================================================================================================================
+
 
 https://www.cnblogs.com/rossiXYZ/p/15928428.html
 [源码解析] NVIDIA HugeCTR，GPU版本参数服务器--- (6) --- Distributed hash表
+0xFF 参考
+https://developer.nvidia.com/blog/introducing-merlin-hugectr-training-framework-dedicated-to-recommender-systems/
 
+https://developer.nvidia.com/blog/announcing-nvidia-merlin-application-framework-for-deep-recommender-systems/
 
+https://developer.nvidia.com/blog/accelerating-recommender-systems-training-with-nvidia-merlin-open-beta/
+
+HugeCTR源码阅读
+
+embedding层如何反向传播
+
+https://web.eecs.umich.edu/~justincj/teaching/eecs442/notes/linear-backprop.html
+
+稀疏矩阵存储格式总结+存储效率对比:COO,CSR,DIA,ELL,HYB
+
+无中生有：论推荐算法中的Embedding思想
+
+tf.nn.embedding_lookup函数原理
+
+求通俗讲解下tensorflow的embedding_lookup接口的意思？
+
+【技术干货】聊聊在大厂推荐场景中embedding都是怎么做的
+
+ctr预估算法对于序列特征embedding可否做拼接，输入MLP?与pooling
+
+推荐系统中的深度匹配模型
+
+土法炮制：Embedding 层是如何实现的？
+
+不等距双杆模型_搜索中的深度匹配模型（下）
+
+深度特征 快牛策略关于高低层特征融合
+
+[深度学习] DeepFM 介绍与Pytorch代码解释
+
+deepFM in pytorch
+
+推荐算法之7——DeepFM模型
+
+DeepFM 参数理解（二）
+
+推荐系统遇上深度学习(三)--DeepFM模型理论和实践
+
+[深度学习] DeepFM 介绍与Pytorch代码解释
+
+https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/operations.html
+
+带你认识大模型训练关键算法：分布式训练Allreduce算法
+=============================================================================================================================================================
+=============================================================================================================================================================
+=============================================================================================================================================================
 https://www.cnblogs.com/rossiXYZ/p/15943757.html
 [源码解析] NVIDIA HugeCTR，GPU 版本参数服务器---(7) ---Distributed Hash之前向传播
 
@@ -849,9 +1019,115 @@ embedding vector数值也是虚拟的。嵌入层的最终输出是在 Embedding
 或者从下面来看。
 006-016.jpg
 
+0xFF 参考
+快过HugeCTR：用OneFlow轻松实现大型推荐系统引擎
 
+https://nvlabs.github.io/cub/annotated.html
 
+https://developer.nvidia.com/blog/introducing-merlin-hugectr-training-framework-dedicated-to-recommender-systems/
 
+https://developer.nvidia.com/blog/announcing-nvidia-merlin-application-framework-for-deep-recommender-systems/
+
+https://developer.nvidia.com/blog/accelerating-recommender-systems-training-with-nvidia-merlin-open-beta/
+
+HugeCTR源码阅读
+
+embedding层如何反向传播
+
+https://web.eecs.umich.edu/~justincj/teaching/eecs442/notes/linear-backprop.html
+
+稀疏矩阵存储格式总结+存储效率对比:COO,CSR,DIA,ELL,HYB
+
+无中生有：论推荐算法中的Embedding思想
+
+tf.nn.embedding_lookup函数原理
+
+求通俗讲解下tensorflow的embedding_lookup接口的意思？
+
+【技术干货】聊聊在大厂推荐场景中embedding都是怎么做的
+
+ctr预估算法对于序列特征embedding可否做拼接，输入MLP?与pooling
+
+推荐系统中的深度匹配模型
+
+土法炮制：Embedding 层是如何实现的？
+
+不等距双杆模型_搜索中的深度匹配模型（下）
+
+深度特征 快牛策略关于高低层特征融合
+
+[深度学习] DeepFM 介绍与Pytorch代码解释
+
+deepFM in pytorch
+
+推荐算法之7——DeepFM模型
+
+DeepFM 参数理解（二）
+
+推荐系统遇上深度学习(三)--DeepFM模型理论和实践
+
+[深度学习] DeepFM 介绍与Pytorch代码解释
+
+https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/operations.html
+
+带你认识大模型训练关键算法：分布式训练Allreduce算法
+
+=============================================================================================================================================================
+=============================================================================================================================================================
+=============================================================================================================================================================
+
+https://www.cnblogs.com/rossiXYZ/p/15965286.html
+[源码解析] NVIDIA HugeCTR，GPU 版本参数服务器---(8) ---Distributed Hash之后向传播
+0xFF 参考
+https://nvlabs.github.io/cub/annotated.html
+
+https://developer.nvidia.com/blog/introducing-merlin-hugectr-training-framework-dedicated-to-recommender-systems/
+
+https://developer.nvidia.com/blog/announcing-nvidia-merlin-application-framework-for-deep-recommender-systems/
+
+https://developer.nvidia.com/blog/accelerating-recommender-systems-training-with-nvidia-merlin-open-beta/
+
+HugeCTR源码阅读
+
+embedding层如何反向传播
+
+https://web.eecs.umich.edu/~justincj/teaching/eecs442/notes/linear-backprop.html
+
+稀疏矩阵存储格式总结+存储效率对比:COO,CSR,DIA,ELL,HYB
+
+无中生有：论推荐算法中的Embedding思想
+
+tf.nn.embedding_lookup函数原理
+
+求通俗讲解下tensorflow的embedding_lookup接口的意思？
+
+【技术干货】聊聊在大厂推荐场景中embedding都是怎么做的
+
+ctr预估算法对于序列特征embedding可否做拼接，输入MLP?与pooling
+
+推荐系统中的深度匹配模型
+
+土法炮制：Embedding 层是如何实现的？
+
+不等距双杆模型_搜索中的深度匹配模型（下）
+
+深度特征 快牛策略关于高低层特征融合
+
+[深度学习] DeepFM 介绍与Pytorch代码解释
+
+deepFM in pytorch
+
+推荐算法之7——DeepFM模型
+
+DeepFM 参数理解（二）
+
+推荐系统遇上深度学习(三)--DeepFM模型理论和实践
+
+[深度学习] DeepFM 介绍与Pytorch代码解释
+
+https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/operations.html
+
+带你认识大模型训练关键算法：分布式训练Allreduce算法
 
 
 

@@ -855,6 +855,13 @@ void SparseEmbeddingHashCpu<TypeHashKey, TypeEmbeddingComp>::cpu_optimizer_adagr
     // step1: extend sample IDs
     cpu_csr_extend(batchsize_, slot_num_, row_offset_.get(), sample_id_.get());
 
+    /*
+6.4 从key得到value_index
+下面我们看看第二步，根据key获取到 hash table value index。
+step2: get value_index by key (will call hash_table->get_insert() in nv_hashtable lib)
+这部分只是在 test/utest/embedding/sparse_embedding_hash_cpu.hpp 之中有，
+因为是测试代码，所以此时哈希表没有数据，需要设置，训练代码不需要这一步。
+     * */
     // step2: do hash table get() value_index by key
     int nnz = row_offset_[batchsize_ * slot_num_];
     hash_table_->get(hash_key_.get(), hash_value_index_.get(), nnz);

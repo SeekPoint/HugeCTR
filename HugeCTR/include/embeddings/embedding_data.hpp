@@ -130,7 +130,7 @@ class EmbeddingData {
       return evaluate_value_tensors_;
     }
   }
-
+//首先要说明，这里nnz（non-zero feature number per batch）来自如下，就是本样本之中非零key个数。
   std::vector<std::shared_ptr<size_t>>& get_nnz_array(bool is_train) {
     if (is_train) {
       return train_nnz_array_;

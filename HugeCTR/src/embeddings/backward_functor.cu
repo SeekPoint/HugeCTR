@@ -30,7 +30,9 @@ __global__ void backward_sum_kernel(int batch_size, int slot_num, int embedding_
 
   if (bid < batch_size && tid < embedding_vec_size) {
     for (int i = 0; i < slot_num; i++) {
+      // 先找到某一个稠密张量的位置，再加上tid就得到了张量之中某一个元素（本tid对应的元素）的位置
       size_t feature_index = (size_t)(bid * slot_num + i) * embedding_vec_size + tid;
+      // 更新梯度数值
       wgrad[feature_index] = top_grad[feature_index];
     }
   }
@@ -215,17 +217,20 @@ void SparseEmbeddingFunctors::backward(size_t batch_size,
   size_t local_gpu_count = resource_manager.get_local_gpu_count();
 
   CudaDeviceContext context;
-  for (size_t id = 0; id < local_gpu_count; id++) {
+  for (size_t id = 0; id < local_gpu_count; id++) {   // 遍历本地GPU
     if (slot_num_per_gpu[id] == 0) {
       continue;
     }
 
     const auto &local_gpu = resource_manager.get_local_gpu(id);
     context.set_device(local_gpu->get_device_id());
+
+    // 拿到某一个GPU对应的梯度和offset信息
     const TypeEmbeddingComp *top_grad = embedding_feature_tensors[id].get_ptr();
     const TypeHashKey *row_offset = row_offset_allreduce_tensors[id].get_ptr();
     TypeEmbeddingComp *wgrad = wgrad_tensors[id].get_ptr();
 
+    // 计算更新本地梯度
     if (combiner == 0)  // sum
     {
       backward_sum(batch_size, slot_num_per_gpu[id], embedding_vec_size, top_grad, wgrad,

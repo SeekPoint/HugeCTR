@@ -144,6 +144,13 @@ void ReshapeLayer<T>::initialize() {
   }
 }
 
+/*
+3.2 切换
+从代码可以知道，在训练时候就是反复利用了这两个成员变量 in_tensor 和 out_tensor 来做切换。
+    前向传播时候，fprop是把数据从in_tensor拷贝到out_tensor。
+    后向传播时候，bprop 是把数据从out_tensor拷贝到in_tensor。
+所以，前向传播的输入变量，在反向传播时候被用来作为输入变量。因此我们可以知道嵌入层也是这个套路。
+ * */
 template <typename T>
 void ReshapeLayer<T>::fprop(bool is_train) {
   prop_common(true, is_train, get_gpu().get_stream());
@@ -161,11 +168,11 @@ void ReshapeLayer<T>::prop_common(bool forward, bool is_train, cudaStream_t stre
   Tensor2<T>& out_tensor = out_tensors_[0];
 
   if (in_place_) {
-    if (forward) {
+    if (forward) {  // 前向传播
       CK_CUDA_THROW_(cudaMemcpyAsync(out_tensor.get_ptr(), in_tensor.get_ptr(),
                                      in_tensor.get_size_in_bytes(), cudaMemcpyDeviceToDevice,
                                      stream));
-    } else {
+    } else {  // 反向传播
       CK_CUDA_THROW_(cudaMemcpyAsync(in_tensor.get_ptr(), out_tensor.get_ptr(),
                                      out_tensor.get_size_in_bytes(), cudaMemcpyDeviceToDevice,
                                      stream));

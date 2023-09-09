@@ -22,6 +22,10 @@
 namespace HugeCTR {
 
 /**
+0x03 输入
+我们首先看看如何获取反向传播的输入。因为从嵌入层比较难以查找，我们换个思路，从 reshape 层来看看。
+3.1 定义
+可以看到，其主要成员变量就是输入 in_tensors_ 和输出 out_tensors_。
  * Layer which reshapes a 3D/2D input tensor to 2D output tensor,
  * e.g., (batch_size, n_slots, vector_size) to (batch_size, n_slots * vector_size),
  * e.g., (batch_size * n_slots, vector_size) to (batch_size, n_slots * vector_size),

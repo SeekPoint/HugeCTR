@@ -61,7 +61,8 @@ template <typename T>
 void NetworkExchangeWgrad<T>::update_embed_wgrad_size(size_t size) {
   CK_THROW_(Error_t::IllegalCall, "Network wgrad exchange can't update embed wgrad size!");
 }
-
+//5.2 功能
+//    交换功能主要是使用底层 all_reduce 来完成操作。
 template <typename T>
 void NetworkExchangeWgrad<T>::allreduce(size_t device_id, cudaStream_t stream) {
   auto ar_comm = resource_manager_->get_ar_comm();
