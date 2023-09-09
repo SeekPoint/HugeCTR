@@ -41,7 +41,17 @@ EmbeddingData<TypeHashKey, TypeEmbeddingComp> embedding_data_;
                 valuate_keys_ 是验证集相关。
 所以，embedding_data_ 就是包揽了嵌入层的输入和输出。
  需要注意的是，这里都是 Tensors2，可以认为是 Tensor2 的列表，列表之中每一个Tensor2 对应了一个GPU。
- * */
+ *
+ *
+ *
+ * 0x03 配置数据
+之前，在EmbeddingData 初始化时候，只是配置了其成员函数 train_keys_，
+ train_keys_ 就是前面提到的 sparse_input，就是CSR format对应的稀疏张量。
+
+ 此时数据如下, embedding_offsets_ 和 train_output_tensors_ 都是预先分配的，
+ 我们假设 CSR 数据为 ：40,50,10,20,30,50,10,30,20，CSR row offset 是 0,4,7,9。
+ 006-002.jpg
+ */
 template <typename TypeKey, typename TypeEmbeddingComp>
 class EmbeddingData {
  public:
@@ -97,6 +107,9 @@ class EmbeddingData {
    5.3.2 引用
  我们仔细看看 EmbeddingData 的一些成员函数，发现他们都返回了引用。这就是关键，这些成员函数可以修改 EmbeddingData的内部成员变量，比如：get_row_offsets_tensors返回了一个引用。
  类似的，比如get_output_tensors，get_input_keys，get_row_offsets_tensors，get_value_tensors，get_nnz_array 都返回引用，这说明 EmbeddingData 大部分成员变量都是可以被引用来修改的。
+
+   从 CSR 读取 offset 代码如下：
+     因为输入有几千万个，但是可能其中只有几百个才非零，所以hash表就是把这几千万个输入做第一次映射，可以减少大量内存空间。
  * */
   Tensors2<TypeKey>& get_row_offsets_tensors(bool is_train) {
     if (is_train) {
@@ -105,7 +118,11 @@ class EmbeddingData {
       return evaluate_row_offsets_tensors_;
     }
   }
-
+/*4.1 提取数据
+  这里用到了比如 get_row_offsets_tensors 这样的方法从 embedding_data_ 之中提取输入数据。
+  从input_buffers_读取数据对应的提取数据代码如下，就是从GPU的sparse input csr数据中读取到输入数据，
+  作为后续在hash table查找的key
+  */
   Tensors2<TypeKey>& get_value_tensors(bool is_train) {
     if (is_train) {
       return train_value_tensors_;

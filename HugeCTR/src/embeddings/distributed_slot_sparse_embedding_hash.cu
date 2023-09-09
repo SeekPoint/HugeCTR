@@ -95,13 +95,29 @@ DistributedFilterKeyStorage<TypeHashKey>::DistributedFilterKeyStorage(
 
  于是，在进行具体前向操作之前，会把EmbeddingData内部都进行配置，分别指向GPU之中的相应数据。
  005-004.jpg
+
+ ===
+ 3.2 配置数据
+在前向传播之中，首先就是在 filter_keys_per_gpu 之中使用 train_keys_ 来对其他成员变量进行配置，
+ 目的是拿到本GPU上 DistributedSlotSparseEmbeddingHash 对应的输入数据。
+ 回忆一下，EmbeddingData 的这几个成员变量 get_output_tensors，get_input_keys，
+ get_row_offsets_tensors，get_value_tensors，get_nnz_array 都返回引用，
+ 这说明大部分成员变量都是可以被直接修改的。
+ 具体配置代码如下：
  */
 template <typename TypeHashKey, typename TypeEmbeddingComp>
 void DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::filter_keys_per_gpu(
     bool is_train, size_t id, size_t global_id, size_t global_num) {
+  // 对当前GPU进行配置
+
+  // 得到 train_keys_，利用它来配置row offsets和value
   const SparseTensor<TypeHashKey> &all_gather_key = embedding_data_.get_input_keys(is_train)[id];
+
   // 这里拿到了get_row_offsets_tensors
+  // 得到 embedding_data_.train_row_offsets_tensors_，修改 rowoffset_tensor 就是修改此成员变量
   Tensor2<TypeHashKey> rowoffset_tensor = embedding_data_.get_row_offsets_tensors(is_train)[id];
+
+  // 得到 embedding_data_.train_value_tensors_，修改 value_tensor 就是修改此成员变量
   Tensor2<TypeHashKey> value_tensor = embedding_data_.get_value_tensors(is_train)[id];
   std::shared_ptr<size_t> nnz_ptr = embedding_data_.get_nnz_array(is_train)[id];
   auto &filter_keys_storage = filter_keys_storage_[id];
@@ -125,6 +141,7 @@ void DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::filter_
     distributed_embedding_kernels::HashOp<TypeHashKey> select_op{global_id, global_num};
 
     size_t size_in_bytes = filter_keys_storage.temp_value_select_storage.get_size_in_bytes();
+    // 配置 embedding_data_.train_value_tensors_
     cub::DeviceSelect::If(filter_keys_storage.temp_value_select_storage.get_ptr(), size_in_bytes,
                           all_gather_key.get_value_ptr(), value_tensor.get_ptr(),
                           filter_keys_storage.value_select_num.get_ptr(), all_gather_key.nnz(),
@@ -147,6 +164,7 @@ void DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::filter_
       // 这里会进行修改设置rowoffset_tensor
       size_t size_in_bytes =
           filter_keys_storage.temp_rowoffset_select_scan_storage.get_size_in_bytes();
+      // 配置row offset，就是拷贝到 rowoffset_tensor之中。
       cub::DeviceScan::InclusiveSum(
           filter_keys_storage.temp_rowoffset_select_scan_storage.get_ptr(), size_in_bytes,
           filter_keys_storage.rowoffset_select.get_ptr(), rowoffset_tensor.get_ptr(), rowoffset_num,
@@ -154,9 +172,15 @@ void DistributedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::filter_
     }
 
     // select nnz
+    // 直接拷贝即可
     cudaMemcpyAsync(nnz_ptr.get(), filter_keys_storage.value_select_num.get_ptr(), sizeof(size_t),
                     cudaMemcpyDeviceToHost, stream);
   }
+  //配置完成之后，得到如下，其中 train_value_tensors_ 对应了csr value，
+  // train_row_offsets_tensors_ 对应了csr row offset，从SparseTensor拷贝到 EmbeddingData。
+  //006-003A.jpg
+
+  //结合我们例子，最后前向传播输入训练数据是：  //006-003.jpg
 }
 
 template <typename TypeHashKey, typename TypeEmbeddingComp>

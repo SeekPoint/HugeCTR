@@ -34,16 +34,18 @@ __global__ void forward_scale_kernel(int batch_size, int slot_num, int embedding
   if (bid < batch_size && tid < embedding_vec_size) {
     for (int i = 0; i < slot_num; i++) {
       size_t feature_row_index = bid * slot_num + i;
+      // 本slot元素总数
       int feature_num = row_offset[feature_row_index + 1] - row_offset[feature_row_index];
+      // 输出矩阵的row offset
       size_t feature_index = feature_row_index * embedding_vec_size + tid;
       float feature =
           TypeConvertFunc<float, TypeEmbeddingComp>::convert(embedding_feature[feature_index]);
       float scaler = 1.0f;
       if (feature_num > 1) {
-        scaler = 1.0f / (float)feature_num;
+        scaler = 1.0f / (float)feature_num; // 除数
       }
 
-      embedding_feature[feature_index] =
+      embedding_feature[feature_index] = // 设置
           TypeConvertFunc<TypeEmbeddingComp, float>::convert(feature * scaler);
     }
   }

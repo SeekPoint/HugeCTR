@@ -23,6 +23,42 @@ optimizer = hugectr.CreateOptimizer(optimizer_type = hugectr.Optimizer_t.Adam,
 # 5.1 配置
 # 前面提到了可以使用代码完成网络配置，我们从下面可以看到，DeepFM 一共有三个embedding层，
 # 分别对应 wide_data 的 sparse 参数映射到dense vector，deep_data 的 sparse 参数映射到dense vector，。
+'''
+4.3.4 嵌入表大小
+我们已经知道可以通过哈希表来进行缩减嵌入表大小，现在又知道其实还可以通过combine来继续化简，所以在已经有了哈希表基础之上，我们需要先问几个问题。
+        目前 hash_table_value 究竟有多大？就是权重矩阵（稠密矩阵）究竟多大？
+        embedding_feature （嵌入层前向传播的输出）究竟有多大？就是输出的规约之后的矩阵应该有多大？
+        embedding_feature 的每一个元素是怎么计算出来的？
+        实际矩阵有多大？
+我们解答一下。
+        第一个问题hash_table_value 究竟有多大？
+前文之中有分析 hash_table_value 大小是：max_vocabulary_size_per_gpu_ = embedding_data_.embedding_params_.max_vocabulary_size_per_gpu;
+实际上，大致可以认为，hash_table_value 的大小是：(value number in CSR) * (embedding_vec_size) 。
+hash_table_value 的数值是随机初始化的。每一个原始的 CSR user ID 对应了其中的 embedding_vec_size 个元素。
+hash_value_index 和 row_offset 凑在一起，
+就可以找到每一个原始的 CSR user ID 对应了其中的 embedding_vec_size 个元素。
+        第二个问题：embedding_feature 究竟有多大？就是逻辑上的稠密矩阵究竟有多大？从代码可以看到，
+            embedding_feature[feature_row_index * embedding_vec_size + tid] =
+            TypeConvertFunc<TypeEmbeddingComp, float>::convert(sum);
+可见，embedding_feature 的大小是：(row number in CSR) * (embedding_vec_size) 。因此，对于 embedding_feature_tensors_，我们抽象一下，输入假设是4行 CSR格式，则输出就是4行稠密向量格式。
+        第三个问题：embedding_feature 的每一个元素是怎么计算出来的？
+是遍历slot和element，进行计算。
+            sum += (value_index != std::numeric_limits<size_t>::max())
+            ? hash_table_value[value_index * embedding_vec_size + tid]
+            : 0.0f;
+        第四个问题：实际embedding矩阵，或者说工程上的稠密矩阵有多大？
+其实就是 slot_num * embedding_vec_size。row number 其实就是 slot_num。从下面输出可以看到。
+以 deep_data 为例，其slot num 是26，embedding_vec_size = 16，最后输出的一条样本大小是 [26 x 16]。
+
+...
+输出：
+
+"------------------------------------------------------------------------------------------------------------------\n",
+"Layer Type                              Input Name                    Output Name                   Output Shape \n",
+"------------------------------------------------------------------------------------------------------------------\n",
+"DistributedSlotSparseEmbeddingHash      wide_data                     sparse_embedding2             (None, 1, 1)  \n",
+"DistributedSlotSparseEmbeddingHash      deep_data                     sparse_embedding1             (None, 26, 16)"\
+'''
 model = hugectr.Model(solver, reader, optimizer)
 model.add(hugectr.Input(label_dim = 1, label_name = "label",
                         dense_dim = 13, dense_name = "dense",

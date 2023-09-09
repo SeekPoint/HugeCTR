@@ -124,7 +124,11 @@ class DistributedSlotSparseEmbeddingHash : public IEmbedding {
  private:
   // 前面提到的 DataReader.output_ 就会被保存在这里。就是sparse input信息
   EmbeddingData<TypeHashKey, TypeEmbeddingComp> embedding_data_;
-
+/*
+ * 3.1.3 临时存储
+  前面cub方法之中，都要有一个临时存储区域，
+  因此 DistributedSlotSparseEmbeddingHash 之中有一个 DistributedFilterKeyStorage 就是用来达到这个目的。
+  */
   // 是 hash_value, hash_value_index的实际存储位置
   std::vector<DistributedFilterKeyStorage<TypeHashKey>> filter_keys_storage_;
 
@@ -239,20 +243,69 @@ class DistributedSlotSparseEmbeddingHash : public IEmbedding {
 我们提前看看前向传播，会发现其使用了类似 embedding_data_.get_row_offsets_tensors 进行运算。
    但是我们目前并没有配置这样的参数，只是配置了 train_keys。
    这个地方很绕，仔细看代码，原来在前向传播之中有使用 filter_keys_per_gpu 进行设置类似参数。
+
+
+/*
+0x02 总体逻辑
+前向传播的总体功能是：Embedded_lookuper负责本地gpu计算和查找嵌入向量，即用户输入->嵌入向量。这里只考虑 *train* 名字的各种变量，忽略 *evalute* 名字的各种变量，即只看训练逻辑。
+2.1 注释&思路
+码之中的注释如下：
+      ...
+我们翻译梳理逻辑如下 Read data from input_buffers_ -> look up -> write to output_tensors，具体就是：
+      从input_buffers_读取数据。具体是通过 filter_keys_per_gpu 来完成对 embedding_data_ 的一系列配置。
+      从embedding之中进行 look up，即调用 functors_.forward_per_gpu 从本gpu的hashmap做lookup操作。
+            由 DistributedSlotSparseEmbeddingHash 的特点我们知道，因为当前gpu对应的数据key都在此gpu，所以此时不需要做节点间通信。
+            这里 hash_tables_[i]，hash_table_value_tensors_[i]，hash_value_index_tensors_[i] 就是本地第 i 个GPU对应的hashmap组合。
+            embedding_data_.get_value_tensors(is_train)[i] 就是从我们之前提到的GPU sparse input 内部提取的输入训练数据。
+            进行本地规约。
+      做reduce scatter操作。每个gpu的数据是batch size条，但是每条数据里的每个slot只是一部分key，需要做reduce scatter操作，做完reduce scatter后，数据才是完整的，此时每个gpu上分到完整数据的一部分。
+      写到output_tensors。
+具体一些成员变量的定义需要回忆一下。
+      hash_value_index_tensors_ ：embedding vector表的row index。就是低维矩阵的 row offset。
+          需要注意，其类型是 Tensors2，其类型是 std::vector<Tensor2>，所以每一个GPU对应该vector之中的一个元素。
+          index 和 value 的行数相关。
+          内容是hash table value_index(row index of embedding)。
+      hash_table_value_tensors_ ：embedding vector表的value。就是低维矩阵。
+          需要注意，其类型是 Tensors2，其类型是 std::vector<Tensor2>，所以每一个GPU对应该vector之中的一个元素。
+          其内容是embedding vector。
+          用hash_value_index_tensors_的结果在这里查找一个 embedding vector。
+后续我们依然做简化，忽略多个 worker，多个 GPU 的情况。
+2.2 总体代码
+      前向传播总体代码如下：
+      本地多个GPU并行前向传播，每个线程对应一个GPU，多GPU进行。
+      调用 filter_keys_per_gpu 完成完成了对 EmbeddingData 的配置，这里i就是GPU index，拿到本GPU对应的输入数据。
+      调用 forward_per_gpu 从本gpu的hashmap做lookup操作。
+      reduce scatter，做了之后，数据才是完整的，每个gpu上分到完整数据的一部分。
+      all_reduce 操作，这是combiner=mean时需要继续处理。
+      forward_scale 操作，做平均。
+
+具体流程是
+006-001.jpg
+*/
 */
   void forward(bool is_train, int eval_batch = -1) override {
     // Read data from input_buffers_ -> look up -> write to output_tensors
 
 #pragma omp parallel num_threads(embedding_data_.get_resource_manager().get_local_gpu_count())
     {
-      size_t i = omp_get_thread_num();
+      // 本地多个GPU并行前向传播
+      // 每个线程对应一个GPU，多GPU进行
+      size_t i = omp_get_thread_num();  // 拿到本线程序号
       CudaDeviceContext context(embedding_data_.get_local_gpu(i).get_device_id());
       if (embedding_data_.embedding_params_.is_data_parallel) {
+        // 这里完成了对 EmbeddingData 的配置，这里i就是GPU index
         // 在这里有操作
         filter_keys_per_gpu(is_train, i, embedding_data_.get_local_gpu(i).get_global_id(),
                             embedding_data_.get_resource_manager().get_global_gpu_count());
       }
+      // 从本gpu的hashmap做lookup操作
+      // 这里 hash_tables_[i]，hash_table_value_tensors_[i]，hash_value_index_tensors_[i] 就是对应的hashmap
       // 部分前向操作
+      /*
+ 0x04 Lookup操作
+此部分就是完成嵌入表 look up操作。现在EmbeddingData得到了各种配置，就是sparse input参数，
+所以可以利用其作为key，得到embedding vector了。这部分是在 forward_per_gpu 内部完成的
+       */
       functors_.forward_per_gpu(embedding_data_.embedding_params_.get_batch_size(is_train),
                                 embedding_data_.embedding_params_.slot_num,
                                 embedding_data_.embedding_params_.embedding_vec_size, 0, is_train,
@@ -264,7 +317,41 @@ class DistributedSlotSparseEmbeddingHash : public IEmbedding {
                                 embedding_data_.get_local_gpu(i).get_stream());
     }
 
+    /*
+0x05 Reduce Scatter
+现在每个GPU之上都得到了自己样本对应的稠密向量，记录在 embedding_feature_tensors_ 之上。
+每个GPU的数据是 batch size 条，每条有 slot number 个稠密向量，我们现在回忆一下：
+DistributedSlotEmbeddingHash：
+所有特征都存储于不同特征域/槽上，不管槽索引号是多少，这些特征都根据特征的索引号分布到不同的GPU上。
+这意味着同一插槽中的特征可能存储在不同的 GPU 中，这就是将其称为“分布式插槽”的原因。由于需要全局规约，
+所以DistributedSlotEmbedding 适合 embedding 大于 GPU 内存大小的情况，
+因而DistributedSlotEmbedding 在 GPU 之间有更多的内存交换。
+
+GPU之上每个样本数据之中的slot只是slot的一部分数据，我们给出一个例子。
+我们假设一共有2个gpu，batch size为2，一共3个slot。
+有两个样本，拿第一个样本为例，slot 1有两个key，分别是GPU 1 上的1，GPU 2上的7。
+所以需要把这两个key进行归并操作。具体如下：
+006-008.png
+每条数据里面的每个slot都只是一部分key，同一插槽中的特征可能存储在不同的 GPU 中，这些特征都根据特征的索引号分布到不同的GPU上。
+这样就需要把GPU 1，GPU 2之上的数据进行合并，做完reduce scatter后，数据应该是完整的，并且每个gpu上只分到一部分完整的数据。
+5.1 背景知识
+关于 Reduce Scatter 的原理，请参见 https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/operations.html。这里只是大致介绍。
+Reduce操作的作用是对所有计算节点上的数值进行归约操作，并且只将归约后的结果保存到主节点上。和 AllReduce 的操作其实一样，只不过是把结果只放到root上而已。
+006-009.png
+ReduceScatter 操作执行与Reduce操作相同的操作，只是结果分散在rank之间的相等块中，
+每个rank根据其rank索引获得一块数据，即每个rank只受到reduce结果的一部分数据。
+或者说，ReduceScatter 就是先做Scatter，将数据切分成同等大小的数据块，再依据Rank Index 对每一个rank所获得的数据做Reduce。
+这类似于全聚集，但是并不是将数据简单拼接到一起而是做了规约操作（比如，求和或最大值操作）。
+006-010.png
+或者参见下图，来自NVIDIA文档 https://images.nvidia.cn/events/sc15/pdfs/NCCL-Woolley.pdf。
+对所有GPU上的数据进行reduce操作，这里是sum，然后将结果切分到所有的GPU上。
+006-011.png
+ 5.2 代码
+具体代码如下，是对 embedding_feature_tensors_ 进行 reduce scatter，结果放在 embedding_data_.get_output_tensors(is_train) 之上
+*/
     // do reduce scatter
+    // do reduce scatter
+    // 做了之后，数据才是完整的，每个gpu上分到完整数据的一部分
     size_t recv_count = embedding_data_.get_batch_size_per_gpu(is_train) *
                         embedding_data_.embedding_params_.slot_num *
                         embedding_data_.embedding_params_.embedding_vec_size;
@@ -281,6 +368,12 @@ class DistributedSlotSparseEmbeddingHash : public IEmbedding {
                            row_offset_allreduce_tensors_, embedding_data_.get_resource_manager());
 
       // do average
+      /*6.2 Forward Scale
+最后要做一步 Forward Scale 操作。
+前面我们做了AllReduce之后，得到 row_offset_allreduce_tensors_ 是 0,9,14,19,21。
+这样就知道第一个行总个数是9个，第二行总个是是7+7-9 = 5个。
+就可以对embedding_data_.get_output_tensors(is_train)的每个元素进行操作，每个元素都除以本slot的元素总数，就是做mean了。
+       */
       functors_.forward_scale(
           embedding_data_.embedding_params_.get_batch_size(is_train),
           embedding_data_.embedding_params_.slot_num,

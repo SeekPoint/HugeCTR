@@ -46,6 +46,8 @@ template <typename KeyType, typename ValType>
 void NvHashTable<KeyType, ValType>::get_insert(const void *d_keys, void *d_vals, size_t len, cudaStream_t stream) {
     const KeyType *_d_keys = reinterpret_cast<const KeyType*>(d_keys);
     ValType *_d_vals = reinterpret_cast<ValType*>(d_vals);
+    //HashTable 的 get_insert 位于 sparse_operation_kit/kit_cc/kit_cc_infra/src/hashtable/nv_hashtable.cu。
+    // 这里是在GPU进行并行操作，提取value。
     return hashtable_.get_insert(_d_keys, _d_vals, len, stream);
 }
 

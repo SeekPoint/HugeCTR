@@ -18,7 +18,15 @@
 #include "HugeCTR/include/utils.hpp"
 
 namespace HugeCTR {
-
+/*
+ reduce_scatter 算子代码是，这里是sum操作：
+我们用图例来展示一下目前过程，为了更好的理解，这里我们可以把Reduce-Scatter分段考虑，
+      Reduce 就是类似AllReduce操作，这个之后，所有GPU之上拥有所有数据。
+      Scatter 则按照 rank 来对样本进行分配，所以GPU 1 之上是Sample 1，GPU 2之上是Sample 2。
+06-012.jpg
+我们最后归纳整体如下：
+06-013.jpg
+*/
 template <typename TypeEmbeddingComp>
 void SparseEmbeddingFunctors::reduce_scatter(size_t recv_count,
                                              const Tensors2<TypeEmbeddingComp> &send_tensors,

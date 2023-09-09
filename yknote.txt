@@ -683,6 +683,176 @@ sparse_combiner: A string specifying how to reduce if a categorical column
 那么，嵌入层是如何利用到 output_ 中的sparse特征的呢？我们需要一步一步来看。
 
 
+https://www.cnblogs.com/rossiXYZ/p/15928428.html
+[源码解析] NVIDIA HugeCTR，GPU版本参数服务器--- (6) --- Distributed hash表
+
+
+https://www.cnblogs.com/rossiXYZ/p/15943757.html
+[源码解析] NVIDIA HugeCTR，GPU 版本参数服务器---(7) ---Distributed Hash之前向传播
+
+3.1 CUB函数
+我们首先要介绍几个cub库的方法，这是NVIDIA提供的函数库，用来操作CUDA，把一些常见方法用并行化来实现，比如数组求和，不并行计算就是从头查到尾，如果CUDA并行，则可以高速实现。其网址为：https://docs.nvidia.com/cuda/cub/index.html，配置数据中就采用其中了几个方法。
+
+3.1.1 cub::DeviceScan::InclusiveSum
+此函数作用是使用GPU来计算inclusive prefix sum。
+
+使用举例如下：
+
+ * int  num_items;      // e.g., 7
+ * int  *d_in;          // e.g., [8, 6, 7, 5, 3, 0, 9]
+ * int  *d_out;         // e.g., [ ,  ,  ,  ,  ,  ,  ]
+ * ...
+ *
+ * // Determine temporary device storage requirements for inclusive prefix sum
+ * void     *d_temp_storage = NULL;
+ * size_t   temp_storage_bytes = 0;
+ * cub::DeviceScan::InclusiveSum(d_temp_storage, temp_storage_bytes, d_in, d_out, num_items);
+ *
+ * // Allocate temporary storage for inclusive prefix sum
+ * cudaMalloc(&d_temp_storage, temp_storage_bytes);
+ *
+ * // Run inclusive prefix sum
+ * cub::DeviceScan::InclusiveSum(d_temp_storage, temp_storage_bytes, d_in, d_out, num_items);
+ *
+ * // d_out <-- [8, 14, 21, 26, 29, 29, 38]
+函数实现为：
+
+/**
+* \brief Computes a device-wide inclusive prefix sum.
+*
+* \par
+* - Supports non-commutative sum operators.
+* - Provides "run-to-run" determinism for pseudo-associative reduction
+*   (e.g., addition of floating point types) on the same GPU device.
+*   However, results for pseudo-associative reduction may be inconsistent
+*   from one device to a another device of a different compute-capability
+*   because CUB can employ different tile-sizing for different architectures.
+* - \devicestorage
+*/
+template <
+    typename            InputIteratorT,
+    typename            OutputIteratorT>
+CUB_RUNTIME_FUNCTION
+static cudaError_t InclusiveSum(
+    void*               d_temp_storage,                 ///< [in] %Device-accessible allocation of temporary storage.  When NULL, the required allocation size is written to \p temp_storage_bytes and no work is done.
+    size_t&             temp_storage_bytes,             ///< [in,out] Reference to size in bytes of \p d_temp_storage allocation
+    InputIteratorT      d_in,                           ///< [in] Pointer to the input sequence of data items
+    OutputIteratorT     d_out,                          ///< [out] Pointer to the output sequence of data items
+    int                 num_items,                      ///< [in] Total number of input items (i.e., the length of \p d_in)
+    cudaStream_t        stream             = 0,         ///< [in] <b>[optional]</b> CUDA stream to launch kernels within.  Default is stream<sub>0</sub>.
+    bool                debug_synchronous  = false)     ///< [in] <b>[optional]</b> Whether or not to synchronize the stream after every kernel launch to check for errors.  May cause significant slowdown.  Default is \p false.
+{
+    // Signed integer type for global offsets
+    typedef int OffsetT;
+
+    return DispatchScan<InputIteratorT, OutputIteratorT, Sum, NullType, OffsetT>::Dispatch(
+        d_temp_storage,
+        temp_storage_bytes,
+        d_in,
+        d_out,
+        Sum(),
+        NullType(),
+        num_items,
+        stream,
+        debug_synchronous);
+}
+如果想深入研究，可以参见 https://nvlabs.github.io/cub/structcub_1_1_device_scan.html 。
+
+3.1.2 cub::DeviceSelect::If
+此函数作用是：使用 select_op 函数，将相应的元素从 d_in 分割到一个分区序列 d_out。被复制到第一个分区的元素总数被写入 d_num_selected_out。
+
+具体使用方法为，此例子中，小于7的放在第一个分区，分区内元素数目为5.
+
+ * // Functor type for selecting values less than some criteria
+ * struct LessThan
+ * {
+ *     int compare;
+ *
+ *     CUB_RUNTIME_FUNCTION __forceinline__
+ *     LessThan(int compare) : compare(compare) {}
+ *
+ *     CUB_RUNTIME_FUNCTION __forceinline__
+ *     bool operator()(const int &a) const {
+ *         return (a < compare);
+ *     }
+ * };
+ *
+ * // Declare, allocate, and initialize device-accessible pointers for input and output
+ * int      num_items;              // e.g., 8
+ * int      *d_in;                  // e.g., [0, 2, 3, 9, 5, 2, 81, 8]
+ * int      *d_out;                 // e.g., [ ,  ,  ,  ,  ,  ,  ,  ]
+ * int      *d_num_selected_out;    // e.g., [ ]
+ * LessThan select_op(7);
+ * ...
+ *
+ * // Determine temporary device storage requirements
+ * void     *d_temp_storage = NULL;
+ * size_t   temp_storage_bytes = 0;
+ * cub::DeviceSelect::If(d_temp_storage, temp_storage_bytes, d_in, d_out, d_num_selected_out, num_items, select_op);
+ *
+ * // Allocate temporary storage
+ * cudaMalloc(&d_temp_storage, temp_storage_bytes);
+ *
+ * // Run selection
+ * cub::DeviceSelect::If(d_temp_storage, temp_storage_bytes, d_in, d_out, d_num_selected_out, num_items, select_op);
+ *
+ * // d_out                 <-- [0, 2, 3, 5, 2, 8, 81, 9]
+ * // d_num_selected_out    <-- [5]
+函数实现是
+
+    /**
+     * \brief Uses the \p select_op functor to split the corresponding items from \p d_in into a partitioned sequence \p d_out.  The total number of items copied into the first partition is written to \p d_num_selected_out.
+     */
+    template <
+        typename                    InputIteratorT,
+        typename                    OutputIteratorT,
+        typename                    NumSelectedIteratorT,
+        typename                    SelectOp>
+    CUB_RUNTIME_FUNCTION __forceinline__
+    static cudaError_t If(
+        void*               d_temp_storage,                ///< [in] %Device-accessible allocation of temporary storage.  When NULL, the required allocation size is written to \p temp_storage_bytes and no work is done.
+        size_t                      &temp_storage_bytes,            ///< [in,out] Reference to size in bytes of \p d_temp_storage allocation
+        InputIteratorT              d_in,                           ///< [in] Pointer to the input sequence of data items
+        OutputIteratorT             d_out,                          ///< [out] Pointer to the output sequence of partitioned data items
+        NumSelectedIteratorT        d_num_selected_out,             ///< [out] Pointer to the output total number of items selected (i.e., the offset of the unselected partition)
+        int                         num_items,                      ///< [in] Total number of items to select from
+        SelectOp                    select_op,                      ///< [in] Unary selection operator
+        cudaStream_t                stream             = 0,         ///< [in] <b>[optional]</b> CUDA stream to launch kernels within.  Default is stream<sub>0</sub>.
+        bool                        debug_synchronous  = false)     ///< [in] <b>[optional]</b> Whether or not to synchronize the stream after every kernel launch to check for errors.  May cause significant slowdown.  Default is \p false.
+    {
+        typedef int                     OffsetT;         // Signed integer type for global offsets
+        typedef NullType*               FlagIterator;   // FlagT iterator type (not used)
+        typedef NullType                EqualityOp;     // Equality operator (not used)
+
+        return DispatchSelectIf<InputIteratorT, FlagIterator, OutputIteratorT, NumSelectedIteratorT, SelectOp, EqualityOp, OffsetT, true>::Dispatch(
+            d_temp_storage,
+            temp_storage_bytes,
+            d_in,
+            NULL,
+            d_out,
+            d_num_selected_out,
+            select_op,
+            EqualityOp(),
+            num_items,
+            stream,
+            debug_synchronous);
+    }
+
+};
+如果想深入研究，参见 https://nvlabs.github.io/cub/structcub_1_1_device_select.html
+
+
+0x07 总结
+最终结果如下，图有几个被简化的地方，比如hash_table_value_tensors_ 应该是向量的向量，这里简化为向量。
+006-015.jpg
+embedding vector数值也是虚拟的。嵌入层的最终输出是在 EmbeddingData 的成员变量 train_output_tensors_ 之上。
+或者从下面来看。
+006-016.jpg
+
+
+
+
+
 
 
 

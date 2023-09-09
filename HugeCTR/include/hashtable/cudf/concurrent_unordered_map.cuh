@@ -637,6 +637,8 @@ int*>(tmp_it), unused, value ); if ( old_val == unused ) { it = tmp_it;
        005-002.jpg
 具体代码如下：
 
+具体逻辑演进如下： 006-006.jpg
+
 // __forceinline__ 的意思是编译为内联函数
  // __host__ __device__ 表示是此函数同时为主机和设备编译
   */
@@ -682,7 +684,8 @@ int*>(tmp_it), unused, value ); if ( old_val == unused ) { it = tmp_it;
       volatile mapped_type& existing_value = current_hash_bucket->second; // 这个才是table value
       // 如果 existing_key == unused_key时，则当前哈希位置为空，所以existing_key由atomicCAS更新为insert_key。
       // 如果 existing_key == insert_key时，这个位置已经被插入这个key了。
-      // 在任何一种情况下，都要执行existing_value和insert_value的atomic聚合，因为哈希表是用聚合操作的标识值初始化的，所以在existing_value仍具有其初始值时，执行该操作是安全的
+      // 在任何一种情况下，都要执行existing_value和insert_value的atomic聚合，因为哈希表是用聚合操作的标识值初始化的，
+      // 所以在existing_value仍具有其初始值时，执行该操作是安全的
       // Try and set the existing_key for the current hash bucket to insert_key
       const key_type old_key = atomicCAS(&existing_key, unused_key, insert_key);
 

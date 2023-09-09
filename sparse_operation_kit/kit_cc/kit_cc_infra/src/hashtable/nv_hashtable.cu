@@ -67,7 +67,7 @@ __global__ void get_insert_kernel(Table* table, const typename Table::key_type* 
   if (i < len) {
     auto it = table->get_insert(keys[i], op, d_counter);
     assert(it != table->end() && "error: get_insert fails: table is full");
-    vals[i] = it->second;
+    vals[i] = it->second; // 在这里对外面 hash_value_index做了设置
   }
 }
 
