@@ -1166,7 +1166,222 @@ tf.nn.embedding_lookup函数原理
 
 https://www.cnblogs.com/rossiXYZ/p/15972705.html
 [翻译] NVIDIA HugeCTR，GPU 版本参数服务器 --(10)--- 推理架构
+0x01 设计
+HugeCTR Backend采用分层框架，
+通过Parameter Server隔离嵌入表的加载，
+以此防止服务被部署在多个GPU上的多个模型影响，
+并通过嵌入缓存来实现高服务可用性。GPU缓存用于在推理过程中加速嵌入向量查找效率。
 
+HugeCTR 后端还提供以下功能：
+    并发模型执行：多个模型和同一模型的多个实例可以在同一 GPU 或多个 GPU 上同时运行。
+
+    可扩展的后端：HugeCTR 提供的推理接口可以很容易地与后端 API 集成，这允许使用 Python 或 C++ 使用任何执行逻辑扩展模型。
+
+    轻松部署新模型：更新模型应尽可能透明，不应影响推理性能。这意味着无论需要部署多少个模型，
+    只要这些模型是使用 HugeCTR 训练的，它们都可以通过相同的 HugeCTR 后端 API 加载。
+    注意：在某些情况下，可能需要针对每个模型相应更新其配置文件。
+
+0x02 HugeCTR后端框架
+以下组件构成了 HugeCTR 后端框架：
+    参数服务器负责加载和管理属于不同模型的大型嵌入表。
+    嵌入表为嵌入缓存提供同步和更新服务。
+    它还确保嵌入表完全加载并定期更新。
+
+    嵌入式缓存可以直接加载到GPU内存之中。
+    因此，它为模型提供了嵌入向量查找功能，从而避免了从参数服务器传输数据（CPU 和 GPU 之间传输）时产生的相对较高的延迟。
+    它还提供了更新机制，以及时加载最新缓存的嵌入向量，这样确保了高命中率。
+
+    模型比嵌入表小得多，因此它通常可以直接加载到GPU内存以加速推断。
+    该模型可以直接与 GPU 内存中的嵌入缓存交互以获得嵌入向量。
+    基于分层设计结构，多个模型实例将共享 GPU 内存中的嵌入缓存，以确保并发的模型执行。
+    基于层级的依赖关系，嵌入表可以与模型的查找操作解耦，转而依靠嵌入缓存实现高效低延迟的查找操作。
+    这使得使用逐个接口初始化和依赖注入来实现推理逻辑成为可能。
+
+下面深入了解一下 HugeCTR Inference 接口的设计框架：
+009-001.png
+图 1. HugeCTR 推理设计架构
+
+在实际应用中，参数服务器用于加载所有模型的嵌入表。
+由于不同的模型在不同的应用场景下通过训练会得到不同的嵌入表，因此在推理过程中会产生很高的内存开销。
+通过引入Parameter Server，嵌入表可以在嵌入表规模较小的情况下直接加载到GPU内存中，
+如果GPU资源耗尽，则加载到CPU的内存中，
+当嵌入表尺寸太大时甚至会加载到固态硬盘（SSD）中) 。
+这确保了不同模型和这些模型之间共享的嵌入表是隔离的。
+
+每个嵌入表将在不同的 GPU 上创建单独的嵌入缓存。
+嵌入缓存将嵌入表视为最小粒度，这意味着嵌入缓存可以直接查找并与相应的嵌入表同步。
+这种机制确保同一模型的多个模型实例可以在部署的 GPU 节点上共享相同的嵌入缓存。
+
+0x03 GPU 嵌入缓存
+3.1 启用
+当启用 GPU 嵌入缓存机制时，模型将从 GPU 嵌入缓存中查找嵌入向量。
+如果嵌入向量在 GPU 嵌入缓存中不存在，它将返回默认嵌入向量。默认值为 0。
+
+HugeCTR 后端需要在 config.pbtxt 文件中设置以下参数：
+        parameters [
+        ...
+          {
+         key: "gpucache"
+         value: { string_value: "true" }
+         },
+         {
+         key: "gpucacheper"
+         value: { string_value: "0.5" }
+         },
+        ...
+        ]
+    gpucache：使用此选项启用 GPU 嵌入缓存机制。
+
+    gpucacheper：确定将从嵌入表加载到 GPU 嵌入缓存中的嵌入向量的百分比。
+    默认值为 0.5。因此，在上面的示例中，嵌入表的 50% 将被加载到 GPU 嵌入缓存中。
+        ...
+        "inference": {
+           "max_batchsize": 64,
+           "hit_rate_threshold": 0.6,
+           "dense_model_file": "/model/dcn/1/_dense_10000.model",
+           "sparse_model_file": "/model/dcn/1/0_sparse_10000.model",
+           "label": 1
+         },
+
+        ...
+        ]
+    hit_rate_threshold：该选项根据命中率确定嵌入缓存和参数服务器的更新机制。
+    如果嵌入向量查找的命中率低于设置的阈值，GPU 嵌入缓存将更新参数服务器上缺失的向量。
+    GPU 嵌入缓存还会基于固定命中率来从参数服务器读取嵌入向量进行更新。
+    必须在模型推理配置 JSON 文件中设置命中率阈值。
+    例如，请参阅dcn.json和deepfm.json。
+
+3.2 禁用
+当禁用 GPU 嵌入缓存机制（即"gpucache"设置为false）时，模型将直接从参数服务器查找嵌入向量。
+在这种情况下，与 GPU 嵌入缓存相关的所有其他设置都将被忽略。
+
+0x04 本地化部署
+Parameter Server 可以在同一个节点和集群上实现本地化部署，即每个节点只有一个 GPU，Parameter Server 部署在同一节点上。
+以下是 HugeCTR 支持的几种部署场景：
+
+    场景1：一个GPU（Node 1）部署一个模型，通过启动多个并行实例来最大化embedding cache的命中率。
+
+    场景2：一个GPU（Node 2）部署多个模型来最大化GPU资源，这需要在并发实例数量和多个嵌入缓存之间取得平衡，以确保有效使用 GPU 内存。
+    每个嵌入缓存和参数服务器之间的数据传输使用一个独立的 cuda 流。
+
+注意：在下面提到的示例中，在每个节点上部署了多个 GPU 和一个参数服务器。
+
+    场景3：多个 GPU（Node 3）部署单个模型，在这种情况下，
+    参数服务器可以帮助提高 GPU 之间嵌入缓存的命中率。
+
+    场景4：多个GPU（Node 4）部署多个模型，这是本地化部署最复杂的场景，
+    需要保证不同的embedding cache可以共享同一个Parameter Server，
+    不同的model可以共享同一节点上的embedding cache。
+009-002
+图 2 HugeCTR 推理本地化部署架构
+
+0x05 具有分层 HugeCTR 参数服务器的分布式部署
+HugeCTR 引入分布式Redis集群作为CPU缓存，用于存储更大的嵌入表，并直接与GPU嵌入缓存交互。本地 RocksDB 作为查询引擎来支撑本地 SSD 上的完整嵌入表，以协助 Redis 集群执行缺失的嵌入键查找。要启用这种分层查找服务，您必须将"db_type"配置项添加到 ps.json 中"hierarchy"。
+
+    {
+        "supportlonglong": false,
+        ...
+        "db_type": "hierarchy",
+        ...
+        "models": [
+          ...
+        ]
+    }
+分布式Redis集群
+    同步查询：每个Model实例从本地化的GPU缓存中查找需要的embedding key，
+    同时也会将缺失的embedding key（Keys not found in the GPU cache）存储到缺失 keys buffer中。
+    缺失 keys buffer与 Redis 实例同步交换，Redis 实例依次对任何丢失的嵌入键执行查找操作。
+    从而，分布式Redis集群充当了二级缓存，这可以完全替代本地化参数服务器来加载所有模型的完整嵌入表。
+
+    用户只需要设置各个节点的ip和端口，即可在HugeCTR分层参数服务器之中启用Redis集群服务。
+    但是Redis集群作为分布式内存缓存，仍然受到每个节点CPU内存大小的限制。
+    换句话说，所有模型的嵌入表的大小仍然不能超过集群的总 CPU 内存。
+    因此，用户可以使用"cache_size_percentage_redis"来控制加载到Redis集群中的模型嵌入表的大小。
+
+    要利用具有 HugeCTR 的 Redis 集群，需要添加以下配置选项以添加到 ps.json：
+        {
+          "supportlonglong": false,
+          ...
+          "db_type": "hierarchy",
+          "redis_ip": "node1_ip:port,node2_ip:port,node3_ip:port,...",
+          "cache_size_percentage_redis": "0.5",
+          ...
+          "models": [
+            ...
+          ]
+        }
+Localized RocksDB（Key-Value Store）：
+    对于超大规模的嵌入表，仍然无法完全加载到Redis集群中，我们将在每个节点上启用本地键值存储（key-value）。
+
+    RocksDB的同步查询：Redis集群客户端在分布式GPU缓存中查找embedding key时，
+    会记录丢失的embedding key（Keys not found in Redis cluster）并记录到丢失key buffer中。
+    丢失key buffer与本地 RocksDB 客户端同步交换，然后将尝试在本地 SSD 中查找这些密钥。
+    最终，SSD 查询引擎将对所有模型缺失的嵌入键执行第三次查找操作。
+
+    对于已经存储在云端的模型存储库（model repositories），RocksDB 将作为本地 SSD 缓存，用于存储 Redis 集群无法加载的剩余部分。
+    因此，在实践中，本地化的 RocksDB 实例充当了三级缓存。
+
+    本地化的 RocksDB 的配置需要添加到 ps.json 中，如下图：
+        {
+          "supportlonglong":false,
+          ...
+          "db_type":"hierarchy",
+          "rocksdb_path":"/current_node/rocksdb_path",
+          ...
+          "models":[
+            ...
+          ]
+        }
+009-003.png
+图 3. HugeCTR 推理分布式部署架构
+
+0x06 Variant Compressed Sparse Row Input
+(Variant Compressed Sparse Row (CSR) )数据格式通常用作 HugeCTR 模型的输入。
+它允许高效地读取数据，从原始数据中获取数据语义信息，并避免花费太多时间进行数据解析。
+NVTabular 必须输出相应的槽信息来指示分类数据的特征文件。
+通过使用变体CSR数据格式，模型可以在从请求中读取数据时获取特征字段信息。
+此外，也可以通过避免过多的请求数据处理来加快推理过程。
+对于每个样本，有三种主要类型的输入数据：
+    Dense Feature：代表实际的数值数据。
+    Column Indices：上游预处理工具 NVTabular 对分类数据执行 one-hot 和 multi-hot 编码并将其转换为数值型数据。
+    Row ptr：包含每个插槽的分类特征数。
+009-004.png
+图 4. HugeCTR 推理 VCSR 输入格式
+
+VCSR 示例
+每个模型的单个嵌入表
+以上图的第 0 行为例。输入数据包含四个槽，HugeCTR根据“Row ptr”输入解析Row 0槽信息。所有嵌入向量都存储在单个嵌入表中。
+009-005.png
+图 5. 每个模型的单个嵌入表的 HugeCTR 推理 VCSR 示例
+
+        Slot 1：包含1 个分类特征，嵌入键（embedding key） 为 1。
+
+        Slot 2：包含1 个分类特征，嵌入键为 3。
+
+        Slot 3：包含0 个分类特征。
+
+        Slot 4：包含2 个分类特征，嵌入键为 8 和 9。
+        HugeCTR 将从 GPU 的嵌入缓存或参数服务器中查找两个嵌入向量，并最终得到一个用于 slot 4 的最终嵌入向量。
+
+每个模型有多个嵌入表
+同样，我们以上图中的Row 0为例。然而，这次我们假设输入数据由四个槽组成，
+其中前两个槽（槽 1 和槽 2）属于第一个嵌入表，后两个槽（槽 3 和槽 4）属于第二个嵌入表。
+所以需要两个独立的Row prts才能在输入数据中形成完整的 Row prts。
+009-006.png
+图 6. 每个模型的多个嵌入表的 HugeCTR 推理 VCSR 示例
+    Slot 1：包含1个分类特征，embedding key为1，对应的embedding向量存储在embedding table 1中。
+    
+    Slot 2：包含1个分类特征，embedding key为3，对应的embedding向量存储在embedding table 1中。
+
+    Slot 3：包含0 个分类特征。
+
+    Slot 4：包含2个分类特征，embedding key分别为8和9。对应的embedding向量存储在embedding table 2中。
+    在这种情况下，HugeCTR会从GPU的embedding cache或者Parameter Server中查找两个embedding vector并最终得到槽 4 的最终嵌入向量。
+
+至此，HugeCTR 全部分析完毕，下一个系列我们来看看 TensorFlow 的分布式训练，敬请期待。
+
+0xFF 参考
+https://github.com/triton-inference-server/hugectr_backend/blob/main/docs/architecture.md
 
 =============================================================================================================================================================
 =============================================================================================================================================================
