@@ -73,6 +73,7 @@ std::vector<Tensors2<TypeEmbeddingComp>> SparseEmbeddingFunctors::get_opt_states
   return transpose_opt_states;
 }
 
+//以 optimizer 为例，其他worker节点把数据发给rank0节点，rank 0 节点收到数据之后，会进行处理。
 template <typename TypeEmbeddingComp>
 void SparseEmbeddingFunctors::dump_opt_states(
     std::ofstream& stream, const ResourceManager& resource_manager,
@@ -109,11 +110,13 @@ void SparseEmbeddingFunctors::dump_opt_states(
     int pid = resource_manager.get_process_id();
     if (resource_manager.is_master_process()) {
       MESSAGE_("Rank" + std::to_string(pid) + ": Write optimzer state to file", true);
+      // rank 0负责写
       stream.write(h_opt_state.get(), total_size);
     }
 #ifdef ENABLE_MPI
     else {
       MESSAGE_("Rank" + std::to_string(pid) + ": Send optimzer state to master node", true);
+      // 其他worker节点把数据发给rank0节点
       int tag = (pid << 8) | 0xBA;
       CK_MPI_THROW_(MPI_Send(h_opt_state.get(), total_size, MPI_CHAR,
                              resource_manager.get_master_process_id(), tag, MPI_COMM_WORLD));
@@ -129,6 +132,7 @@ void SparseEmbeddingFunctors::dump_opt_states(
         MPI_Status status;
         CK_MPI_THROW_(MPI_Probe(r, tag, MPI_COMM_WORLD, &status));
         CK_MPI_THROW_(MPI_Get_count(&status, MPI_CHAR, &recv_size));
+        // rank 0节点收到数据
         CK_MPI_THROW_(MPI_Recv(h_opt_state.get(), recv_size, MPI_CHAR, r, tag, MPI_COMM_WORLD,
                                MPI_STATUS_IGNORE));
         stream.write(h_opt_state.get(), recv_size);

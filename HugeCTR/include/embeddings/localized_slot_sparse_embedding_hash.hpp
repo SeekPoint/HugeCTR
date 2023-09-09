@@ -52,7 +52,22 @@ struct LocalizedFilterKeyStorage {
  * GPUs(which named load_parameters()), and for downloading hash tables from GPUs to a host
  * file(which named dump_parameters()).
  */
+/*
+0x02 定义
+LocalizedSlotSparseEmbeddingHash类继承自Embedding类，Embedding类是实现所有嵌入层的基类。
+在LocalizedSlotSparseEmbeddingHash类中，嵌入表中的一些插槽被分配给单个GPU，称为本地化插槽。
+例如，GPU-0上的插槽0、GPU-1上的插槽1、GPU-0上的插槽2、GPU-1上的插槽3等。
+作为对比，DistributedSlotSparseEmbeddingHash 之中的一些slots被分配给多个GPU。
 
+嵌入表被封装在一个hash table中。哈希表中的键称为hash_table_key，
+哈希表中的值称为hash_table_value_index，
+表示嵌入特征（embedding feature）在嵌入表中的行号，嵌入特征称为hash_table_value。
+
+LocalizedSlotSparseEmbeddingHash 实现了嵌入层的训练过程所需的所有操作，包括前向传播和后向传播。
+正向传播对应于API forward。反向传播分为两个阶段的API：backward和update_params。
+该类还提供将哈希表（包括哈希表键、哈希表值索引和哈希表值）从主机文件上载到GPU（名为load_parameters）的操作，
+以及将哈希表从GPU下载到主机文件（名为dump_parameters）的操作。
+ */
 template <typename TypeHashKey, typename TypeEmbeddingComp>
 class LocalizedSlotSparseEmbeddingHash : public IEmbedding {
   using NvHashTable = HashTable<TypeHashKey, size_t>;
@@ -233,7 +248,38 @@ class LocalizedSlotSparseEmbeddingHash : public IEmbedding {
 
   /**
    * The forward propagation of embedding layer.
-   */
+0x04 前向传播
+4.1 总述
+我们先总述一下前向传播的步骤：
+         首先，使用 filter_keys_per_gpu 配置 EmbeddingData。
+
+         其次，使用 forward_per_gpu 从embedding之中进行 look up，
+         即调用 functors_.forward_per_gpu 从本gpu的hashmap做lookup操作，来得到一个稠密向量。
+
+         使用 all2all_forward 让每个GPU之上拥有所有样本的所有数据。这里最终目的和dist思路类似，
+         每个GPU最后只有若干完整的sample，不同GPU上sample不同。
+         所以就需要把当前sample在其他slot的数据拷贝到本GPU之上。
+         或者说，在all2all的结果之中，只选择当前sample的其他slot。
+
+         使用 forward_reorder 把每个GPU的数据进行内部顺序调整（后面会详细说明）。
+
+         使用 store_slot_id 存储 slot id。之所以要保存参数对应的slot id，
+         是因为每个GPU之上原本是不同的slots，现在要把一个样本所有slots都放在同一个GPU之上，
+         所以加载的时候需要知道加载哪个slot。
+
+我们先用下图举例，这里假定一共2个sample，一共4个slot。embedding_vec_size = 8，batch_size_per_gpu = 2。
+这里就有一个重要的地方：就是如何确定哪个GPU之上有哪个slot。
+
+0~3 % 2 = 0, 1, 0, 1，所以4个slot 被分配到2个GPU，分别是：
+            GPU 0 ：slot 0，slot 2；
+            GPU 1 : slot 1，slot 3；
+需要注意到，这里slot顺序不是1，2，3，4，这就是后面要reorder的原因。
+因为slot不是简单升序，所以下面的数值分配也不是简单的升序，而是：
+            GPU 0 ：1，3，5，7；
+            GPU 1 ：2，4，6，8；
+为什么这样分配？在最后前向传播结束之后可以知道。
+008-002
+*/
   void forward(bool is_train, int eval_batch = -1) override {
 #pragma omp parallel num_threads(embedding_data_.get_resource_manager().get_local_gpu_count())
     {
@@ -254,7 +300,7 @@ class LocalizedSlotSparseEmbeddingHash : public IEmbedding {
           hash_table_value_tensors_[i], hash_value_index_tensors_[i], embedding_feature_tensors_[i],
           embedding_data_.get_local_gpu(i).get_stream());
     }
-
+// 此时，embedding_feature_tensors_ 里面就是 embedding 表，里面都是 embedding vector
 // do all-to-all
 #ifndef ENABLE_MPI
     if (embedding_data_.get_resource_manager().get_global_gpu_count() > 1) {
@@ -301,7 +347,12 @@ class LocalizedSlotSparseEmbeddingHash : public IEmbedding {
 
     return;
   }
-
+/*
+0x05 后向传播
+因为前向传播先后做了 all2all 和 backward，所以后向传播要先做其反向操作，然后做backward。
+虽然我们知道all2all_backward 和 backward_reorder 就是分别做前向传播的逆向操作，
+ 但是这里代码还是比较烧脑，结合图来看会更好。
+ * */
   /**
    * The first stage of backward propagation of embedding layer,
    * which computes the wgrad by the dgrad from the top layer.
@@ -349,6 +400,10 @@ class LocalizedSlotSparseEmbeddingHash : public IEmbedding {
     }
 #endif
 
+    /*
+5.3 backward
+现在就得到了GPU之上原有样本对应的梯度，于是可以进行backward，这部分在之前介绍过，所以我们不再赘述。
+     * */
     // do backward
     functors_.backward(embedding_data_.embedding_params_.get_batch_size(true), slot_num_per_gpu_,
                        embedding_data_.embedding_params_.embedding_vec_size,
@@ -383,11 +438,15 @@ class LocalizedSlotSparseEmbeddingHash : public IEmbedding {
   }
 
   /**
+3.3 如何确定slot
+我们接下来要看看如何确定哪个GPU上有哪个slot。
+   在init_params之中调用了init_embedding完成了构建。
    * Initialize the embedding table
    */
   void init_params() override {
     // do hash table value initialization
     if (slot_size_array_.empty()) {  // if no slot_sizes provided, use the old method to init
+      //init_embedding 将会在每个GPU之上建立嵌入表。
       init_embedding(max_vocabulary_size_per_gpu_,
                      embedding_data_.embedding_params_.embedding_vec_size,
                      hash_table_value_tensors_);
@@ -395,6 +454,7 @@ class LocalizedSlotSparseEmbeddingHash : public IEmbedding {
     } else {
       if (slot_size_array_.size() == embedding_data_.embedding_params_.slot_num) {
 #ifndef DATA_READING_TEST
+        //init_embedding 将会在每个GPU之上建立嵌入表。
         init_embedding(slot_size_array_, embedding_data_.embedding_params_.embedding_vec_size,
                        value_table_tensors_, hash_table_slot_id_tensors_);
 

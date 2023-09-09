@@ -21,6 +21,11 @@ namespace HugeCTR {
 
 namespace {
 
+/*
+4.4 slot id
+最后需要存储slot id。之所以要保存参数对应的slot id，是因为每个GPU之上原本是不同的slots，
+ 现在要把一个样本所有slots都放在同一个GPU之上，所以加载的时候需要知道加载哪个slot
+ * */
 // store slot_id by row_offset and value_index
 template <typename TypeKey, typename TypeValueIndex>
 __global__ void store_slot_id_kernel(size_t batch_size,

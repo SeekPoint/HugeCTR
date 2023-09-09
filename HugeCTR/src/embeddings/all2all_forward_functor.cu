@@ -151,6 +151,37 @@ template void SparseEmbeddingFunctors::all2all_forward<__half>(
 
 #else
 
+/*
+4.2 alltoall
+因为 forward_per_gpu 函数已经在前文介绍过，所以我们直接来看 alltoall操作。
+
+我们前文介绍过，每个GPU在本地获取到稠密向量之后，会存入 embedding_feature_tensors_。
+这是一维数组，在 dist 类型下，长度为 sample_num（batch_size） * slot_num_per_gpu[i] * embedding_vec_size。
+在local这里就是：batch_size_per_gpu * slot_num_per_gpu[i] * embedding_vec_size。
+
+所以接下来就要在各个GPU之间彼此发送 embedding_feature_tensors_，然后每个GPU只接受自己应该接受的。
+
+MPI_Alltoall与MPI_AllGahter相比较，区别在于：
+      MPI_AllGather：不同进程从某一进程（聚集结果进程）收集到的数据完全相同。
+      MPI_Alltoall：不同的进程从某一进程（聚集结果进程）收集到的数据不同。
+比如发送的是：
+            rank=0, 发送 0 1 2
+            rank=1, 发送 3 4 5
+            rank=2, 发送 6 7 8
+则接受的是：
+            rank=0, 接受 0 3 6
+            rank=1, 接受 1 4 7
+            rank=2, 接受 2 5 8
+针对我们的例子，目前如下：
+
+    GPU0发送：1,3,5,7
+    GPU1发送：2,4,6,8
+
+    GPU0接受：1,3,2,4
+    GPU1接受：5,7,6,8
+得到如下，"..." 代表 all2all_tensors_ 长度不止是4个item。
+008-003
+*/
 template <typename Type>
 void SparseEmbeddingFunctors::all2all_forward(size_t batch_size_per_gpu,
                                               const std::vector<size_t> &slot_num_per_gpu,
@@ -189,6 +220,8 @@ void SparseEmbeddingFunctors::all2all_forward(size_t batch_size_per_gpu,
   std::vector<std::vector<const Type *>> src_pos(local_gpu_count,
                                                  std::vector<const Type *>(local_gpu_count));
   std::vector<std::vector<Type *>> dst_pos(local_gpu_count, std::vector<Type *>(local_gpu_count));
+
+  // 设定源数据的offset
   // Calculate the src offset pointer from each GPU to each other
   for (size_t i = 0; i < local_gpu_count; i++) {
     size_t src_offset = 0;
@@ -197,6 +230,8 @@ void SparseEmbeddingFunctors::all2all_forward(size_t batch_size_per_gpu,
       src_offset += table[i][j];
     }
   }
+
+  // 设定目标数据的offset
   // Calculate the dst offset pointer from each GPU to each other
   for (size_t i = 0; i < local_gpu_count; i++) {
     size_t dst_offset = 0;

@@ -142,7 +142,10 @@ void LocalizedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::filter_ke
                                    sizeof(size_t), cudaMemcpyDeviceToHost, local_gpu.get_stream()));
   }
 }
-
+/*
+3.2 构造函数
+LocalizedSlotSparseEmbeddingHash 的构造函数如下，具体逻辑请参见下面注释。
+ * */
 template <typename TypeHashKey, typename TypeEmbeddingComp>
 LocalizedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::LocalizedSlotSparseEmbeddingHash(
     const Tensors2<TypeHashKey> &train_row_offsets_tensors,
@@ -161,6 +164,7 @@ LocalizedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::LocalizedSlotS
   embedding_data_.embedding_params_.is_data_parallel =
       false;  // this ctor is only used for embedding plugin
   try {
+    // 设定每个GPU的最大数据量
     if (slot_size_array_.empty()) {
       max_vocabulary_size_per_gpu_ = embedding_data_.embedding_params_.max_vocabulary_size_per_gpu;
       max_vocabulary_size_ = embedding_data_.embedding_params_.max_vocabulary_size_per_gpu *
@@ -177,9 +181,12 @@ LocalizedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::LocalizedSlotS
     MESSAGE_("max_vocabulary_size_per_gpu_=" + std::to_string(max_vocabulary_size_per_gpu_));
 
     CudaDeviceContext context;
+    // 遍历本地GPU
     for (size_t id = 0; id < embedding_data_.get_resource_manager().get_local_gpu_count(); id++) {
+      // 设定当前上下文
       context.set_device(embedding_data_.get_local_gpu(id).get_device_id());
 
+      // 每个GPU的slot数目
       size_t gid = embedding_data_.get_local_gpu(id).get_global_id();
       size_t slot_num_per_gpu =
           embedding_data_.embedding_params_.slot_num /
@@ -194,6 +201,7 @@ LocalizedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::LocalizedSlotS
       embedding_optimizers_.emplace_back(max_vocabulary_size_per_gpu_,
                                          embedding_data_.embedding_params_, buf);
 
+      // 接下来就是为各种变量分配内存
       // new hash table value vectors
       if (slot_size_array_.empty()) {
         Tensor2<float> tensor;
@@ -313,12 +321,14 @@ LocalizedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::LocalizedSlotS
 #pragma omp parallel num_threads(embedding_data_.get_resource_manager().get_local_gpu_count())
     {
       size_t id = omp_get_thread_num();
+      // 初始化内部哈希表
       CudaDeviceContext context(embedding_data_.get_local_gpu(id).get_device_id());
       // construct HashTable object: used to store hash table <key, value_index>
       hash_tables_[id].reset(new NvHashTable(max_vocabulary_size_per_gpu_));
       embedding_data_.get_buffer(id)->allocate();
     }
 
+    // 初始化优化器
     for (size_t id = 0; id < embedding_data_.get_resource_manager().get_local_gpu_count(); id++) {
       context.set_device(embedding_data_.get_local_gpu(id).get_device_id());
       embedding_optimizers_[id].initialize(embedding_data_.get_local_gpu(id));
@@ -1488,11 +1498,13 @@ void LocalizedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::init_embe
   }
 }
 
+//init_embedding 将会在每个GPU之上建立嵌入表。
 template <typename TypeHashKey, typename TypeEmbeddingComp>
 void LocalizedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::init_embedding(
     const std::vector<size_t> &slot_sizes, size_t embedding_vec_size,
     std::vector<Tensors2<float>> &hash_table_value_tensors,
     Tensors2<size_t> &hash_table_slot_id_tensors) {
+  // 拿到本节点GPU数目和全局GPU数目
   size_t local_gpu_count = embedding_data_.get_resource_manager().get_local_gpu_count();
   size_t total_gpu_count = embedding_data_.get_resource_manager().get_global_gpu_count();
 
@@ -1501,7 +1513,8 @@ void LocalizedSlotSparseEmbeddingHash<TypeHashKey, TypeEmbeddingComp>::init_embe
            ", total_gpu_count=" + std::to_string(total_gpu_count));
 #endif
 
-  for (size_t id = 0; id < local_gpu_count; id++) {
+  for (size_t id = 0; id < local_gpu_count; id++) {  // 遍历本地GPU
+    // 这里使用global id来设置
     size_t device_id = embedding_data_.get_local_gpu(id).get_device_id();
     size_t global_id = embedding_data_.get_local_gpu(id).get_global_id();
 

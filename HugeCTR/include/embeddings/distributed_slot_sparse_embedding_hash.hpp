@@ -505,6 +505,10 @@ calculating wgrad，会选择如下两种之一：
 
   size_t get_max_vocabulary_size() const override { return max_vocabulary_size_; }
 
+  /*
+4.5 输出矩阵
+我们这里通过一个函数来看输出稠密矩阵的大小，其就是 batch_size_per_gpu * slot_num * embedding_vec_size。
+   * */
   // only used for results check
   /**
    * Get the forward() results from GPUs and copy them to the host pointer

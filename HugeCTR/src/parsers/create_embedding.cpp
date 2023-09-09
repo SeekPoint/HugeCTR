@@ -122,6 +122,11 @@ void create_embedding<TypeKey, TypeFP>::operator()(
           resource_manager));
       break;
     }
+      /*
+0x03 构建
+3.1 调用
+在 HugeCTR/src/parsers/create_embedding.cpp 之中，有如下调用：
+*/
     case Embedding_t::LocalizedSlotSparseEmbeddingHash: {
       const SparseEmbeddingHashParams embedding_params = {batch_size,
                                                           batch_size_eval,

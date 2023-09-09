@@ -19,7 +19,15 @@
 namespace HugeCTR {
 
 #ifdef ENABLE_MPI
-
+/*
+5.2 All2all backward
+这里就是进行交换，本质和前向传播起始一样，把自己群发，但是只接受自己应该接受的。
+ 最终每个GPU之上只有自己原先样本的梯度。
+ 我们可以看到，最终得到的梯度和原来 embedding_feature_tensors_ 完全对应，
+ 无论是 sample，还是 slot，还是具体数值。
+008-007
+具体代码如下：
+ */
 /**
  * nccl all2all communication for backward
  * @param batch_size_per_gpu batch size per GPU
@@ -47,8 +55,8 @@ void SparseEmbeddingFunctors::all2all_backward(size_t batch_size_per_gpu, size_t
   std::vector<const Type *> src(local_gpu_count);
   std::vector<Type *> dst(local_gpu_count);
   for (size_t id = 0; id < local_gpu_count; id++) {
-    src[id] = send_tensors[id].get_ptr();
-    dst[id] = recv_tensors[id].get_ptr();
+    src[id] = send_tensors[id].get_ptr(); // send_tensors是一个对应了多个GPU的列表
+    dst[id] = recv_tensors[id].get_ptr(); // recv_tensors是一个对应了多个GPU的列表
   }
 
   std::vector<std::vector<size_t>> send_table(local_gpu_count,

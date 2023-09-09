@@ -729,13 +729,17 @@ Error_t Session::export_predictions(const std::string& output_prediction_file_na
   }
   return Error_t::Success;
 }
-
+/*
+0x06 存储
+这里简单分析一下。存储时候，rank 0负责写文件。
+ * */
 Error_t Session::download_params_to_files_(std::string weights_file,
                                            std::string dense_opt_states_file,
                                            const std::vector<std::string>& embedding_files,
                                            const std::vector<std::string>& sparse_opt_state_files) {
   try {
     {
+      // 存储参数
       int i = 0;
       for (auto& embedding_file : embedding_files) {
         embeddings_[i]->dump_parameters(embedding_file);
@@ -744,6 +748,7 @@ Error_t Session::download_params_to_files_(std::string weights_file,
     }
 
     {
+      // 存储优化器
       int i = 0;
       for (auto& sparse_opt_state_file : sparse_opt_state_files) {
         std::ofstream out_stream_opt(sparse_opt_state_file, std::ofstream::binary);
@@ -753,6 +758,7 @@ Error_t Session::download_params_to_files_(std::string weights_file,
       }
     }
 
+    // rank 0 节点负责写文件
     if (resource_manager_->is_master_process()) {
       std::ofstream out_stream_weight(weights_file, std::ofstream::binary);
       networks_[0]->download_params_to_host(out_stream_weight);

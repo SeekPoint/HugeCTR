@@ -20,7 +20,14 @@
 namespace HugeCTR {
 
 namespace {
-
+/*
+5.1 Reorder backward
+Reorder反向传播目的就是让所有GPU之上的梯度被分散拷贝到 all2all_tensors_ 不同的位置。
+ 下图之中，每个slot对应一个梯度embedding vector，
+ 现在 train_output_tensors_(gradients) 之中是梯度。现在每个GPU之上的梯度都是一个完整的两个sample的梯度。
+008-006
+具体代码如下，这里每个GPU上都会有两个bid，分别对应了sample 1 和 sample 2：
+ * */
 // reorder operation before all2all in backward propagation
 template <typename TypeEmbeddingComp>
 __global__ void backward_reorder_kernel(int batch_size_per_gpu, int slot_num,
@@ -36,23 +43,43 @@ __global__ void backward_reorder_kernel(int batch_size_per_gpu, int slot_num,
   int sample_id = bid;  // sample_id on the current GPU
 
   if ((bid < batch_size_per_gpu) && (tid < embedding_vec_size)) {
+    // 源：本样本梯度的起始位置。GPU0是0，GPU1是1*4*embedding_vec_size
     int src_offset = sample_id * slot_num * embedding_vec_size;
-    int src_stride = embedding_vec_size;
+    int src_stride = embedding_vec_size;  // 跨度。这里是4
 
-    for (int slot_id = 0; slot_id < slot_num; slot_id++) {
-      int gpu_id = slot_id % gpu_num;
+    for (int slot_id = 0; slot_id < slot_num; slot_id++) {   // 取值是0～3
+      int gpu_id = slot_id % gpu_num;  // 取值是0～1
       int offset_pre = 0;  // offset in previous gpus
       for (int id = 0; id < gpu_id; id++) {
+        // 数值是2
         int slot_num_per_gpu = slot_num / gpu_num + ((id < (slot_num % gpu_num)) ? 1 : 0);
+        // 数值是2
         int stride = batch_size_per_gpu * slot_num_per_gpu;
+        // 找到前面GPU之中，所有样本的起始位置，GPU0是0，GPU1是4
         offset_pre += stride;
       }
+
+      // 目标位置：找到当前GPU之中，本样本的起始位置
+      // slot_num_per_gpu = 2
       int slot_num_per_gpu = slot_num / gpu_num + ((gpu_id < (slot_num % gpu_num)) ? 1 : 0);
+      // 2*sample_id
       int offset_cur = sample_id * slot_num_per_gpu;  // offset in current gpu
+
+      // 需要注意的是，embedding_vec_size 是4，但是在图上我们都把 embedding_vec_size 归结为一个slot
+      // 如果对应到图上就是以slot为单位，embedding_vec_size就是1，所以简化如下：
+      // GPU0=sample_id*2+0+slot_id/gpu_num，sample1是0～1，sample2是4～5
+      // GPU1=sample_id*2+4+slot_id/gpu_num，sample1是2～3，sample2是6～7
       int dst_addr = (offset_cur + offset_pre + (int)(slot_id / gpu_num)) * embedding_vec_size;
 
+      // 源位置：找到当前梯度之中，本样本的起始位置
+      // 需要注意的是，embedding_vec_size 是4，但是在图上我们都把 embedding_vec_size 归结为一个slot
+      // 如果对应到图上就是以slot为单位，embedding_vec_size就是1，所以简化如下：
+      // src_offset=sample_id * slot_num
+      // src_addr = sample_id * slot_num + slot_id
+      // 则src_addr应该是：sample_id * slot_num + slot_id
+      // 所以，GPU0，GPU1的取值范围都是sample1=0～3，sample2=4～7
       int src_addr = src_offset + src_stride * slot_id;
-      output[dst_addr + tid] = input[src_addr + tid];
+      output[dst_addr + tid] = input[src_addr + tid];  // 把本样本的梯度拷贝到 all2all_tensors_ 张量上应在的位置
     }
   }
 }
