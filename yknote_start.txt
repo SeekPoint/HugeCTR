@@ -1,0 +1,86 @@
+
+
+amd00@MZ32-00:~/yk_repo/HugeCTR/tag_v3.2.1$ git submodule update --init --recursive
+
+
+
+amd00@MZ32-00:~/yk_repo/HugeCTR/tag_v3.2.1$
+sudo docker run --gpus=all -it --cap-add SYS_NICE -v /home/amd00:/workspace -v /data:/share -w /workspace/yk_repo/HugeCTR/tag_v3.2.1  --name HugeCTRv3.2.1 nvcr.io/nvidia/merlin/merlin-hugectr:23.09
+====ok
+
+amd00@MZ32-00:~/yk_repo/HugeCTR/tag_v3.2.1$ sudo docker start HugeCTRv3.2.1
+HugeCTRv3.2.1
+amd00@MZ32-00:~/yk_repo/HugeCTR/tag_v3.2.1$ sudo docker attach HugeCTRv3.2.1
+root@0da37f00b33c:/workspace/yk_repo/HugeCTR/tag_v3.2.1#
+
+
+
+docker build --pull -t ${DST_IMAGE} -f ${DOCKER_FILE} --build-arg RELEASE=false --build-arg RMM_VER=vnightly --build-arg CUDF_VER=vnightly --build-arg NVTAB_VER=vnightly --build-arg HUGECTR_DEV_MODE=true --no-cache .
+===仿照上面
+amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$
+sudo docker build --pull -t merlin:ctr BASE_IMAGE=$image_tag_built_from_dockerfile.merlin -f dockerfile.ctr --build-arg RELEASE=false --build-arg RMM_VER=vnightly --build-arg CUDF_VER=vnightly --build-arg NVTAB_VER=vnightly --build-arg HUGECTR_DEV_MODE=true --no-cache .
+[sudo] password for amd00:
+[+] Building 2.3s (7/7) FINISHED                                                                                                           docker:default
+ => [internal] load .dockerignore                                                                                                                    0.0s
+ => => transferring context: 2B                                                                                                                      0.0s
+ => [internal] load build definition from dockerfile.ctr                                                                                             0.0s
+ => => transferring dockerfile: 3.54kB                                                                                                               0.0s
+ => resolve image config for docker.io/docker/dockerfile:1.2                                                                                         1.3s
+ => CACHED docker-image://docker.io/docker/dockerfile:1.2@sha256:e2a8561e419ab1ba6b2fe6cbdf49fd92b95912df1cf7d313c3e2230a333fdbcc                    0.0s
+ => [internal] load build definition from dockerfile.ctr                                                                                             0.0s
+ => [internal] load .dockerignore                                                                                                                    0.0s
+
+------
+ > [internal] load
+
+
+  metadata for nvcr.io/nvstaging/merlin/merlin-base:23.06:
+------
+dockerfile.ctr:1
+--------------------
+   1 | >>> # syntax=docker/dockerfile:1.2
+   2 |     ARG MERLIN_VERSION=23.06
+   3 |     ARG TRITON_VERSION=23.06
+--------------------
+ERROR: failed to solve: pulling from host nvcr.io failed with status code [manifests 23.06]: 401 Unauthorized
+amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$
+
+
+(base) amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$
+sudo docker build --pull -f dockerfile.merlin .    ===ok
+amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$ sudo docker images
+REPOSITORY                             TAG                            IMAGE ID       CREATED          SIZE
+<none>                                 <none>                         af6a058ac1b9   40 seconds ago   10.5GB
+sudo docker run -it --entrypoint=/bin/bash -v /home/amd00:/share -v /data:/data --name merlin_ctr --gpus=all --shm-size="100G" af6a058ac1b9
+
+
+
+criteo数据压缩的总共24个，每个大概15g，目前下载2个
+https://ailab.criteo.com/download-criteo-1tb-click-logs-dataset/
+(base) amd00@MZ32-00:/data/criteo_data$ ll
+total 48289612
+drwxrwxr-x  2 amd00 amd00        4096 12月  9 00:03 ./
+drwxrwxrwx 11 root  root         4096 12月  9 00:03 ../
+-rw-r--r--  1 root  root  16309554343 12月  8 19:32 day_0.gz
+-rw-r--r--  1 root  root  16683852232 12月  8 20:53 day_1.gz
+-rw-r--r--  1 root  root  16406826260 12月  8 22:52 day_2.gz
+-rw-rw-r--  1 amd00 amd00        4691 9月   8 12:58 preprocess.sh
+
+ preprocess.sh 来自 tag_v3.2.1\tools\preprocess.sh
+
+ 注意，他会首先删除 第二个参数指定的目录！！！！危险动作！！！
+Usage: preprocess.sh [DATASET_NO.] [DST_DATA_DIR] nvt [IS_PARQUET_FORMAT] [IS_CRITEO_MODE] [IS_FEATURE_CROSSED]
+
+(base) amd00@MZ32-00:/data/criteo_data$ bash preprocess.sh 1 criteo_tmp nvt 0 0 0
+Warning: existing criteo_tmp is erased
+Preprocessing script: NVTabular
+Getting the first few examples from the uncompressed dataset...
+head: cannot open 'day_1' for reading: No such file or directory
+Warning: fallback to find original compressed data day_1.gz...
+Decompressing day_1.gz...
+Counting the number of samples in day_1 dataset...
+The first 45840617 examples will be used in day_1 dataset.
+Shuffling dataset...
+
+
+

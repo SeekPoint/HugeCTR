@@ -1,3 +1,9 @@
+#2楼 [楼主] 2023-09-10 23:05 罗西的思考
+@xmanXXXX
+你好，期间我确实是前后看了好几版代码，最后主要参考版本是 3.1。
+
+
+
 https://www.cnblogs.com/rossiXYZ/p/15897877.html
 [源码解析] NVIDIA HugeCTR，GPU版本参数服务器 --(1)  2022-02-15 19:29  罗西的思考 ===》(tag: v3.4) 以前！
 因此 HugeCTR 架构 2.1 版扩展为支持 Wide & Deep、DCN 和 DeepFM 等模型==》至少是2.1后的版本
@@ -1370,7 +1376,7 @@ VCSR 示例
 009-006.png
 图 6. 每个模型的多个嵌入表的 HugeCTR 推理 VCSR 示例
     Slot 1：包含1个分类特征，embedding key为1，对应的embedding向量存储在embedding table 1中。
-    
+
     Slot 2：包含1个分类特征，embedding key为3，对应的embedding向量存储在embedding table 1中。
 
     Slot 3：包含0 个分类特征。
