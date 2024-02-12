@@ -1,0 +1,85 @@
+# syntax=docker/dockerfile:1.2
+ARG MERLIN_VERSION=23.06
+ARG TRITON_VERSION=23.06
+
+ARG BASE_IMAGE=nvcr.io/nvstaging/merlin/merlin-base:${MERLIN_VERSION}
+
+FROM ${BASE_IMAGE} as base
+
+ARG HUGECTR_VER=main
+ARG HUGECTR_BACKEND_VER=main
+
+RUN pip install --no-cache-dir --upgrade notebook ipython -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install --no-cache-dir mpi4py -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# Install CUDA-Aware hwloc
+ARG HWLOC_VER=2.4.1
+
+RUN cd /opt/hpcx/ompi/include/openmpi/opal/mca/hwloc/hwloc201 && rm -rfv hwloc201.h hwloc/include/hwloc.h
+RUN mkdir -p /var/tmp && wget -q -nc --no-check-certificate -P /var/tmp https://download.open-mpi.org/release/hwloc/v2.4/hwloc-${HWLOC_VER}.tar.gz && \
+    mkdir -p /var/tmp && tar -x -f /var/tmp/hwloc-${HWLOC_VER}.tar.gz -C /var/tmp && \
+    cd /var/tmp/hwloc-${HWLOC_VER} && \
+    ./configure CPPFLAGS="-I${CUDA_HOME}/include/ -L${CUDA_HOME}/lib64/" LDFLAGS="-L${CUDA_HOME}/lib64" --enable-cuda && \
+    make -j$(nproc) && make install && \
+    rm -rf /var/tmp/hwloc-${HWLOC_VER} /var/tmp/hwloc-${HWLOC_VER}.tar.gz
+
+
+# -----------------------------------------------------------------------------
+#    HugeCTR + Dependencies
+
+# Optional dependency: Build and install protocol buffers and Hadoop/HDFS.
+ARG INSTALL_HDFS=false
+
+# Arguments "_XXXX" are only valid when $HUGECTR_DEV_MODE==false
+ARG HUGECTR_DEV_MODE=false
+ARG _HUGECTR_REPO="github.com/NVIDIA-Merlin/HugeCTR.git"
+ARG _CI_JOB_TOKEN=""
+
+ENV OMPI_MCA_plm_rsh_agent=ssh
+ENV OMPI_MCA_opal_cuda_support=true
+
+ENV NCCL_LAUNCH_MODE=PARALLEL
+ENV NCCL_COLLNET_ENABLE=0
+
+ENV SHARP_COLL_NUM_COLL_GROUP_RESOURCE_ALLOC_THRESHOLD=0
+ENV SHARP_COLL_LOCK_ON_COMM_INIT=1
+ENV SHARP_COLL_LOG_LEVEL=3
+ENV HCOLL_ENABLE_MCAST=0
+
+# link sub modules expected by hugectr cmake
+RUN ln -s /usr/lib/libcudf.so /usr/lib/libcudf_base.so
+RUN ln -s /usr/lib/libcudf.so /usr/lib/libcudf_io.so
+RUN ln -s libibverbs.so.1 $(find /usr/lib/*-linux-gnu/libibverbs.so.1 | sed -e 's/\.1$//g')
+
+# Install HugeCTR
+ARG HUGECTR_HOME=/usr/local/hugectr
+#单独执行
+#RUN if [[ "${HUGECTR_DEV_MODE}" == "false" ]]; then \
+#        rm -rf ${HUGECTR_HOME}/lib/libgmock* ${HUGECTR_HOME}/lib/pkgconfig/gmock* ${HUGECTR_HOME}/include/gmock && \
+#        rm -rf ${HUGECTR_HOME}/lib/libgtest* ${HUGECTR_HOME}/lib/pkgconfig/gtest* ${HUGECTR_HOME}/include/gtest && \
+#        git clone --branch ${HUGECTR_VER} --depth 1 https://${_CI_JOB_TOKEN}${_HUGECTR_REPO} /hugectr && \
+#        cd /hugectr && \
+#        git submodule update --init --recursive && \
+#        mkdir build && \
+#        cd build && \
+#        LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs/:$LD_LIBRARY_PATH && \
+#        export PATH=$PATH:/usr/local/cuda-$(echo $CUDA_VERSION | awk -F'.' '{print $1"."$2}')/compat && \
+#        if [[ "${INSTALL_HDFS}" == "false" ]]; then \
+#            cmake -DCMAKE_BUILD_TYPE=Release -DSM="60;61;70;75;80;90" -DENABLE_MULTINODES=ON .. \
+#        ; else \
+#            cmake -DCMAKE_BUILD_TYPE=Release -DSM="60;61;70;75;80;90" -DENABLE_MULTINODES=ON -DENABLE_HDFS=ON .. \
+#        ; fi && \
+#        make -j$(nproc) && \
+#        make install && \
+#        rm -rf ./* && \
+#        chmod +x ${HUGECTR_HOME}/bin/* ${HUGECTR_HOME}/lib/*.so && \
+#        cd ../onnx_converter && \
+#        python setup.py install && \
+#        mv /hugectr/ci ~/hugectr-ci && rm -rf /hugectr && mkdir -p /hugectr && mv ~/hugectr-ci /hugectr/ci \
+#    ; fi
+
+ENV PYTHONPATH=${PYTHONPATH}:${HUGECTR_HOME}/lib
+
+# Clean up
+RUN rm -rf /usr/local/share/jupyter/lab/staging/node_modules/marked
+RUN rm -rf /usr/local/share/jupyter/lab/staging/node_modules/node-fetch

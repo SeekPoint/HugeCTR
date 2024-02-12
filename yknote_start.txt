@@ -19,40 +19,76 @@ docker build --pull -t ${DST_IMAGE} -f ${DOCKER_FILE} --build-arg RELEASE=false 
 ===仿照上面
 amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$
 sudo docker build --pull -t merlin:ctr BASE_IMAGE=$image_tag_built_from_dockerfile.merlin -f dockerfile.ctr --build-arg RELEASE=false --build-arg RMM_VER=vnightly --build-arg CUDF_VER=vnightly --build-arg NVTAB_VER=vnightly --build-arg HUGECTR_DEV_MODE=true --no-cache .
-[sudo] password for amd00:
-[+] Building 2.3s (7/7) FINISHED                                                                                                           docker:default
- => [internal] load .dockerignore                                                                                                                    0.0s
- => => transferring context: 2B                                                                                                                      0.0s
- => [internal] load build definition from dockerfile.ctr                                                                                             0.0s
- => => transferring dockerfile: 3.54kB                                                                                                               0.0s
- => resolve image config for docker.io/docker/dockerfile:1.2                                                                                         1.3s
- => CACHED docker-image://docker.io/docker/dockerfile:1.2@sha256:e2a8561e419ab1ba6b2fe6cbdf49fd92b95912df1cf7d313c3e2230a333fdbcc                    0.0s
- => [internal] load build definition from dockerfile.ctr                                                                                             0.0s
- => [internal] load .dockerignore                                                                                                                    0.0s
-
-------
- > [internal] load
-
-
-  metadata for nvcr.io/nvstaging/merlin/merlin-base:23.06:
-------
-dockerfile.ctr:1
---------------------
-   1 | >>> # syntax=docker/dockerfile:1.2
-   2 |     ARG MERLIN_VERSION=23.06
-   3 |     ARG TRITON_VERSION=23.06
---------------------
+==
 ERROR: failed to solve: pulling from host nvcr.io failed with status code [manifests 23.06]: 401 Unauthorized
 amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$
 
++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 (base) amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$
-sudo docker build --pull -f dockerfile.merlin .    ===ok
+sudo docker build --pull -f dockerfile.merlin .
+===ok, 但是没有指定tag会导致下一步出错！！！！
 amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$ sudo docker images
 REPOSITORY                             TAG                            IMAGE ID       CREATED          SIZE
 <none>                                 <none>                         af6a058ac1b9   40 seconds ago   10.5GB
-sudo docker run -it --entrypoint=/bin/bash -v /home/amd00:/share -v /data:/data --name merlin_ctr --gpus=all --shm-size="100G" af6a058ac1b9
+sudo docker run -it --entrypoint=/bin/bash -v /home/amd00:/share -v /data:/data --name merlin_ctr --shm-size="50G" af6a058ac1b9
+===ok
+amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$ sudo docker build --pull --build-arg BASE_IMAGE=af6a058ac1b9 -f dockerfile.ctr .
+ERROR: failed to solve: pull access denied, repository does not exist or may require authorization: server message: insufficient_scope: authorization failed
+amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$
 
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$ sudo docker build --pull -t merlinbase -f dockerfile.merlin .
+===ok
+amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$ sudo docker images
+REPOSITORY                             TAG                            IMAGE ID       CREATED         SIZE
+merlinbase                             latest                         af6a058ac1b9   3 weeks ago     10.5GB
+amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$ sudo docker build --build-arg BASE_IMAGE=merlinbase -f dockerfile.ctr .
+网络经常断，修改
+RUN pip install --no-cache-dir --upgrade notebook ipython -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install --no-cache-dir mpi4py -i https://pypi.tuna.tsinghua.edu.cn/simple
+同时删除部分内容=具体见修改记录，然后进去后再补上
+amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$
+sudo docker build -t hugectr_dev --build-arg BASE_IMAGE=merlinbase -f dockerfile.ctr .
+===ok
+sudo docker build -t hugectr_dev --build-arg http_proxy=http://192.168.1.19:7890 --build-arg https_proxy=http://192.168.1.19:7890 --build-arg BASE_IMAGE=merlinbase -f dockerfile.ctr .
+
+amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$ sudo docker images
+REPOSITORY                             TAG                            IMAGE ID       CREATED         SIZE
+hugectr_dev                            latest                         ff5b1fa0d4ed   2 minutes ago   10.6GB
+
+
+amd00@MZ32-00:~/yk_repo/HugeCTR/Merlin/docker$
+-e http_proxy=http://192.168.1.19:7890 -e https_proxy=http://192.168.1.19:7890 是为了github下载翻墙
+amd00@MZ32-00:~$
+sudo docker run -it --entrypoint=/bin/bash -v /home/amd00:/share -v /data:/data --name hugectr_dev_c --shm-size="50G" hugectr_dev
+sudo docker run -it -e http_proxy=http://192.168.1.19:7890 -e https_proxy=http://192.168.1.19:7890 --entrypoint=/bin/bash -v /home/amd00:/share -v /data:/data --name hugectr_dev_c --shm-size="50G" hugectr_dev
+--net=host
+
+
+root@a438aa829ebc:/opt/tritonserver#
+退出后再次进入
+amd00@MZ32-00:~/yk_repo/HugeCTR/tag_v3.2.1$ sudo docker start hugectr_dev_c
+hugectr_dev_c
+amd00@MZ32-00:~/yk_repo/HugeCTR/tag_v3.2.1$ sudo docker attach hugectr_dev_c
+root@a438aa829ebc:/opt/tritonserver#
+
+网络卡主
+root@a438aa829ebc:/share/yk_repo/HugeCTR/tag_v3.2.1/build# cmake -DCMAKE_BUILD_TYPE=Release -DSM="80;90" -DENABLE_MULTINODES=ON
+fatal: unable to access 'https://github.com/pybind/pybind11.git/': Failed to connect to github.com port 443 after 134497 ms: Connection timed out
+CMake Error at /share/yk_repo/HugeCTR/tag_v3.2.1/_deps/pybind11_sources-subbuild/pybind11_sources-populate-prefix/tmp/pybind11_sources-populate-gitupdate.cmake:97 (execute_process):
+  execute_process failed command indexes:
+
+    1: "Child return code: 128"
+
+=============可能  docker无法访问外网！！！卡住！！！！
+=====即使通过了，编译也会出错--gtest
+
+-------------------------
+
+apt update --必須
+root@a661b05cc8fd:/share/yk_repo/HugeCTR/tag_v3.2.1# apt install libspdlog-dev
 
 
 criteo数据压缩的总共24个，每个大概15g，目前下载2个
@@ -83,4 +119,7 @@ The first 45840617 examples will be used in day_1 dataset.
 Shuffling dataset...
 
 
+root@fb2b19bbb046:/share/yk_repo/HugeCTR/v4.x/build# apt install libspdlog-dev
 
+
+cmake -DCMAKE_BUILD_TYPE=Release -DSM="80;90" -DENABLE_MULTINODES=ON
